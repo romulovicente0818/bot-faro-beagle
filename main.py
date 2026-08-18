@@ -9,14 +9,16 @@ import zoneinfo
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 
+# Filtros reforçados contra jogos de base, amadores e femininos
 TERMOS_IGNORADOS = [
-    # Categoria de Base
-    'u17', 'u18', 'u19', 'u20', 'u21', 'u23', 
-    'sub-17', 'sub-19', 'sub-20', 'sub-21', 'sub-23', 
-    'sub17', 'sub19', 'sub20', 'sub21', 'sub23',
-    'youth', 'juniors', 'reserve', 'reserves',
+    # Categorias de Base (Extensivo)
+    'u15', 'u16', 'u17', 'u18', 'u19', 'u20', 'u21', 'u22', 'u23', 
+    'sub-15', 'sub-16', 'sub-17', 'sub-18', 'sub-19', 'sub-20', 'sub-21', 'sub-22', 'sub-23', 
+    'sub15', 'sub16', 'sub17', 'sub18', 'sub19', 'sub20', 'sub21', 'sub22', 'sub23',
+    ' youth', 'youth ', 'juniors', 'junior', 'reserve', 'reserves', 'academy',
+    'proliga', 'liga pro', 'cup u', 'league u', 'trophy u', ' championship u',
     # Feminino
-    'women', 'feminino', 'femeni', 'women\'s',
+    'women', 'feminino', 'femeni', 'women\'s', ' female',
     # Campeonatos Amadores
     'amateur', 'amador', 'regionaliga', 'oberliga', 
     'landesliga', 'district', 'county', 'regional league', 'non-league'
@@ -72,9 +74,6 @@ def obter_odds_sofascore(event_id):
                 choices = m.get('choices', [])
                 for choice in choices:
                     name = choice.get('name', '')
-                    fractional = choice.get('fractionalValue', '')
-                    
-                    # Converte odds fracionárias ou decimais
                     odd_val = None
                     if choice.get('initialOdd'):
                         odd_val = choice.get('initialOdd') / 100
@@ -85,7 +84,6 @@ def obter_odds_sofascore(event_id):
                         texto_odds.append(f"• *{name}:* `{odd_val:.2f}`")
                         
             if texto_odds:
-                # Retorna até 4 cotações de destaque
                 return "\n💵 *Odds no Momento:*\n" + "\n".join(texto_odds[:4])
     except Exception:
         pass
@@ -109,33 +107,34 @@ def extrair_stat_sofascore(stats_data, item_name):
     return 0
 
 def eh_liga_valida(nome_liga):
-    nome_lower = nome_liga.lower()
+    """Filtro rigoroso contra ligas de base, femininas e amatórias."""
+    nome_lower = f" {nome_liga.lower()} "
     for termo in TERMOS_IGNORADOS:
         if termo in nome_lower:
             return False
     return True
 
-def extrair_minuto_jogo(item):
-    """Extrai os minutos decorridos do jogo."""
-    status_desc = item.get('status', {}).get('description', '')
+def extrair_minutagem_formatada(item, eh_1h, eh_2h):
+    """Formata o tempo no padrão exacto 'X' do 1º tempo' ou 'X' do 2º tempo'."""
+    status_desc = str(item.get('status', {}).get('description', '')).strip()
     
-    # Extração por tempo decorrido
     time_data = item.get('time', {})
+    minuto = None
+
     if isinstance(time_data, dict) and time_data.get('played'):
         minuto = time_data.get('played') // 60
-        return f"{minuto}' min"
 
-    if "'" in status_desc:
-        return status_desc.strip()
+    if not minuto and "'" in status_desc:
+        min_limpo = status_desc.replace("'", "").split('+')[0]
+        if min_limpo.isdigit():
+            minuto = int(min_limpo)
+
+    tempo_rotulo = "1º tempo" if eh_1h else "2º tempo" if eh_2h else "tempo"
+
+    if minuto:
+        return f"{minuto}' do {tempo_rotulo}"
     
-    time_status = item.get('status', {}).get('type', '')
-    if time_status == 'inprogress':
-        if '1st' in status_desc.lower():
-            return "1º Tempo"
-        elif '2nd' in status_desc.lower():
-            return "2º Tempo"
-
-    return status_desc or "Em andamento"
+    return status_desc or f"Em andamento ({tempo_rotulo})"
 
 def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
@@ -160,6 +159,7 @@ def checar_jogos_ao_vivo():
 
             nome_liga = item.get('tournament', {}).get('name', 'Liga')
             
+            # FILTRO: Descarta categorias de base
             if not eh_liga_valida(nome_liga):
                 continue
 
@@ -173,9 +173,6 @@ def checar_jogos_ao_vivo():
 
             status_desc = item.get('status', {}).get('description', '')
             time_status = item.get('status', {}).get('type', '')
-            
-            # Minutagem exata no momento do envio
-            minutagem = extrair_minuto_jogo(item)
 
             time_casa = item.get('homeTeam', {}).get('name', 'Casa')
             time_fora = item.get('awayTeam', {}).get('name', 'Fora')
@@ -189,6 +186,9 @@ def checar_jogos_ao_vivo():
 
             if not (eh_1h or eh_2h):
                 continue
+
+            # Formatação do tempo ex: 20' do 1º tempo
+            minutagem = extrair_minutagem_formatada(item, eh_1h, eh_2h)
 
             stats = obter_estatisticas_sofascore(event_id)
             
@@ -262,7 +262,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando com minutagem e odds...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando...")
 
     while True:
         try:

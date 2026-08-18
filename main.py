@@ -8,6 +8,24 @@ import zoneinfo
 # ==============================================================================
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
+
+TERMOS_IGNORADOS = [
+    'u17', 'u18', 'u19', 'u20', 'u21', 'u23', 
+    'sub-17', 'sub-19', 'sub-20', 'sub-21', 'sub-23', 
+    'sub17', 'sub19', 'sub20', 'sub21', 'sub23',
+    'women', 'feminino', 'femeni', 'women\'s', 'youth', 'juniors', 'reserve'
+]
+
+# Mapeamento de códigos de países/regiões do Sofascore para Bandeiras Emoji
+BANDEIRAS_CUSTOMIZADAS = {
+    'england': '🏴󠁧󠁢󠁥󠁮󠁧 line󠁿',
+    'scotland': '🏴󠁧󠁢󠁳󠁣󠁴󠁿',
+    'wales': '🏴󠁧󠁢󠁷󠁬󠁳󠁿',
+    'international': '🌐',
+    'europe': '🇪🇺',
+    'world': '🌍',
+    'south-america': '🌎'
+}
 # ==============================================================================
 
 scraper = cloudscraper.create_scraper(
@@ -24,6 +42,26 @@ def obter_horario_brasil():
     fuso_br = zoneinfo.ZoneInfo('America/Sao_Paulo')
     return datetime.now(fuso_br)
 
+def obter_bandeira_emoji(country_code, country_name):
+    """Converte o código do país do Sofascore em Emoji de Bandeira."""
+    if not country_code:
+        return '⚽'
+
+    code = country_code.lower().strip()
+    name = country_name.lower().strip() if country_name else ''
+
+    # Trata casos especiais (Inglaterra, Escócia, Torneios Internacionais)
+    if name in BANDEIRAS_CUSTOMIZADAS:
+        return BANDEIRAS_CUSTOMIZADAS[name]
+    if code in BANDEIRAS_CUSTOMIZADAS:
+        return BANDEIRAS_CUSTOMIZADAS[code]
+
+    # Converte código de 2 letras (ISO Alpha-2) em Emoji de Bandeira
+    if len(code) == 2 and code.isalpha():
+        return chr(ord(code[0].upper()) + 127397) + chr(ord(code[1].upper()) + 127397)
+    
+    return '🌐'
+
 def enviar_alerta(mensagem):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -37,7 +75,7 @@ def enviar_alerta(mensagem):
         print(f"Erro ao enviar Telegram: {e}")
 
 def obter_estatisticas_sofascore(event_id):
-    """Obtém os dados detalhados da partida no Sofascore via V1."""
+    """Obtém os dados detalhados da partida no Sofascore."""
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
     try:
         res = scraper.get(url, timeout=10)
@@ -48,22 +86,35 @@ def obter_estatisticas_sofascore(event_id):
     return []
 
 def extrair_stat_sofascore(stats_data, item_name):
-    """Extrai estatísticas como Chutes e Escanteios."""
+    """Extrai estatísticas com validação segura contra dados ausentes/nulos."""
+    if not stats_data:
+        return 0
+
     for period in stats_data:
         if period.get('period') == 'ALL':
             for group in period.get('groups', []):
                 for item in group.get('statisticsItems', []):
                     if item.get('name') == item_name:
-                        val_home = int(item.get('home', '0').replace('%', '')) if str(item.get('home')).isdigit() else 0
-                        val_away = int(item.get('away', '0').replace('%', '')) if str(item.get('away')).isdigit() else 0
+                        home_val = str(item.get('home', '0')).replace('%', '')
+                        away_val = str(item.get('away', '0')).replace('%', '')
+                        
+                        val_home = int(home_val) if home_val.isdigit() else 0
+                        val_away = int(away_val) if away_val.isdigit() else 0
                         return val_home + val_away
     return 0
+
+def eh_liga_valida(nome_liga):
+    """Filtra e ignora campeonatos de base (Sub-20/21) e femininos."""
+    nome_lower = nome_liga.lower()
+    for termo in TERMOS_IGNORADOS:
+        if termo in nome_lower:
+            return False
+    return True
 
 def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
     print(f"[{horario}] Faro de Beagle buscando partidas no Sofascore...")
 
-    # URL oficial v1 sem erro 404
     url = "https://api.sofascore.com/api/v1/sport/football/events/live"
 
     try:
@@ -81,12 +132,23 @@ def checar_jogos_ao_vivo():
             if event_id in jogos_notificados:
                 continue
 
+            nome_liga = item.get('tournament', {}).get('name', 'Liga')
+            
+            # FILTRO 1: Ignora ligas de base (Sub-20/21) e femininas
+            if not eh_liga_valida(nome_liga):
+                continue
+
+            # Obtenção do País e Bandeira
+            category = item.get('tournament', {}).get('category', {})
+            country_code = category.get('alpha2')
+            country_name = category.get('name')
+            bandeira = obter_bandeira_emoji(country_code, country_name)
+
             status_desc = item.get('status', {}).get('description', '')
             time_status = item.get('status', {}).get('type', '')
 
             time_casa = item.get('homeTeam', {}).get('name', 'Casa')
             time_fora = item.get('awayTeam', {}).get('name', 'Fora')
-            nome_liga = item.get('tournament', {}).get('name', 'Liga')
 
             gols_c = item.get('homeScore', {}).get('current', 0)
             gols_f = item.get('awayScore', {}).get('current', 0)
@@ -98,26 +160,30 @@ def checar_jogos_ao_vivo():
             if not (eh_1h or eh_2h):
                 continue
 
+            # Busca estatísticas do jogo
             stats = obter_estatisticas_sofascore(event_id)
-            if not stats:
-                continue
-
+            
+            # Extrai estatísticas (retorna 0 caso a API não disponibilize no jogo)
             chutes_gol = extrair_stat_sofascore(stats, 'Shots on target')
             chutes_fora = extrair_stat_sofascore(stats, 'Shots off target')
             finalizacoes = chutes_gol + chutes_fora
             escanteios = extrair_stat_sofascore(stats, 'Corner kicks')
+
+            # Exige estatísticas ativas para disparar alerta
+            if finalizacoes == 0 and escanteios == 0:
+                continue
 
             # Estratégia 1: Over 0.5 HT (0x0)
             if total_gols == 0 and eh_1h:
                 if finalizacoes >= 3 or escanteios >= 2:
                     mensagem = (
                         f"🚨 *FARO DE BEAGLE: OVER 0.5 HT (0x0)* 🚨\n\n"
-                        f"🏆 *Liga:* {nome_liga}\n"
+                        f"{bandeira} *Liga:* {nome_liga}\n"
                         f"⚽ *{time_casa} 0 x 0 {time_fora}*\n"
                         f"⏱️ Status: *1º Tempo em andamento*\n\n"
-                        f"📊 *Estatísticas:*\n"
+                        f"📊 *Estatísticas em Tempo Real:*\n"
                         f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
-                        f"m *Finalizações Totais:* `{finalizacoes}`\n"
+                        f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
                         f"🚩 *Escanteios:* `{escanteios}`\n\n"
                         f"💡 Confira a linha de **Over 0.5 HT**!"
                     )
@@ -129,10 +195,10 @@ def checar_jogos_ao_vivo():
                 if finalizacoes >= 4:
                     mensagem = (
                         f"⚡ *FARO DE BEAGLE: OVER 1.5 HT (2º GOL)* ⚡\n\n"
-                        f"🏆 *Liga:* {nome_liga}\n"
+                        f"{bandeira} *Liga:* {nome_liga}\n"
                         f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
                         f"⏱️ Status: *1º Tempo em andamento*\n\n"
-                        f"📊 *Estatísticas:*\n"
+                        f"📊 *Estatísticas em Tempo Real:*\n"
                         f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
                         f"👞 *Finalizações Totais:* `{finalizacoes}`\n\n"
                         f"💡 Confira a linha de **Over 1.5 HT**!"
@@ -146,10 +212,10 @@ def checar_jogos_ao_vivo():
                     proximo_gol = total_gols + 0.5
                     mensagem = (
                         f"🎯 *FARO DE BEAGLE: OVER LIMITE FT (+{proximo_gol})* 🎯\n\n"
-                        f"🏆 *Liga:* {nome_liga}\n"
+                        f"{bandeira} *Liga:* {nome_liga}\n"
                         f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
                         f"⏱️ Status: *2º Tempo em andamento*\n\n"
-                        f"📊 *Estatísticas:*\n"
+                        f"📊 *Estatísticas em Tempo Real:*\n"
                         f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
                         f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
                         f"🚩 *Escanteios:* `{escanteios}`\n\n"
@@ -163,7 +229,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando via Cloudscraper no Sofascore v1...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando com bandeiras das ligas...")
 
     while True:
         try:

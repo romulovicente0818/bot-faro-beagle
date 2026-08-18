@@ -210,6 +210,7 @@ def checar_jogos_ao_vivo():
                         jogos_notificados.add(fixture_id)
 
 if __name__ == '__main__':
+    enviar_alerta("*TESTE:* O bot está conectado e enviando mensagens corretamente!")
     while True:
         try:
             checar_jogos_ao_vivo()

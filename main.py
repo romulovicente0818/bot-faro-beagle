@@ -86,11 +86,13 @@ def checar_jogos_ao_vivo():
         total_gols = gols_c + gols_f
 
         # ======================================================================
-        # REGRAS DE 1º TEMPO (1H)
+        # 1. ESTRATÉGIAS DE 1º TEMPO (1H)
         # ======================================================================
         if status == '1H':
-            # ESTRATÉGIA 1: JOGO 0 x 0 (Over 0.5 HT) -> 12' a 32'
-            if total_gols == 0 and 12 <= tempo_minuto <= 32:
+            # ------------------------------------------------------------------
+            # A) OVER 0.5 HT (Placar 0x0 | 15' a 25' min)
+            # ------------------------------------------------------------------
+            if total_gols == 0 and 15 <= tempo_minuto <= 25:
                 url_stats = f"https://v3.football.api-sports.io/fixtures/statistics?fixture={fixture_id}"
                 try:
                     resp_stats = requests.get(url_stats, headers=headers_api, timeout=15).json()
@@ -101,35 +103,34 @@ def checar_jogos_ao_vivo():
                     stats_casa = resp_stats['response'][0]['statistics']
                     stats_fora = resp_stats['response'][1]['statistics']
 
-                    posse_casa = extrair_valor_stat(stats_casa, 'Ball Possession')
-                    posse_fora = extrair_valor_stat(stats_fora, 'Ball Possession')
-
                     atq_perigosos = extrair_valor_stat(stats_casa, 'Dangerous Attacks') + extrair_valor_stat(stats_fora, 'Dangerous Attacks')
                     appm = round(atq_perigosos / tempo_minuto, 2)
 
                     chutes_gol = extrair_valor_stat(stats_casa, 'Shots on Goal') + extrair_valor_stat(stats_fora, 'Shots on Goal')
                     chutes_fora = extrair_valor_stat(stats_casa, 'Shots off Goal') + extrair_valor_stat(stats_fora, 'Shots off Goal')
                     chutes_bloq = extrair_valor_stat(stats_casa, 'Blocked Shots') + extrair_valor_stat(stats_fora, 'Blocked Shots')
-                    finalizacoes = chutes_gol + chutes_fora + chutes_bloq
+                    finalizacoes_totais = chutes_gol + chutes_fora + chutes_bloq
                     escanteios = extrair_valor_stat(stats_casa, 'Corner Kicks') + extrair_valor_stat(stats_fora, 'Corner Kicks')
 
-                    if appm >= 1.0 and finalizacoes >= 3 and chutes_gol >= 1 and (posse_casa >= 55 or posse_fora >= 55):
+                    if appm >= 1.0 and finalizacoes_totais >= 4 and (chutes_gol >= 1 or escanteios >= 2):
                         mensagem = (
-                            f"⚡ *ALERTA DE PRESSAO (GOL HT)* ⚡\n\n"
+                            f"🚨 *RADAR OVER 0.5 HT (0x0)* 🚨\n\n"
                             f"🏆 *Liga:* {pais_liga} - {nome_liga}\n"
                             f"⚽ *{time_casa} 0 x 0 {time_fora}*\n"
                             f"⏱️ Tempo: *{tempo_minuto}' min*\n\n"
-                            f"📊 *Estatísticas Ao Vivo:*\n"
-                            f"• APPM (Ataques/min): *{appm}*\n"
-                            f"• Finalizações Totais: *{finalizacoes}*\n"
-                            f"• Chutes no Gol: *{chutes_gol}*\n"
-                            f"• Escanteios: *{escanteios}*\n\n"
-                            f"🔥 *Forte tendência de gol no 1º tempo!*"
+                            f"📊 *Estatísticas em Tempo Real:*\n"
+                            f"🔥 *APPM (Pressão):* `{appm}` (mínimo 1.0/min)\n"
+                            f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
+                            f"👞 *Finalizações Totais:* `{finalizacoes_totais}`\n"
+                            f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                            f"💡 *Ação:* Confira a **Odd de Over 0.5 HT** na sua casa de apostas!"
                         )
                         enviar_alerta(mensagem)
                         jogos_notificados.add(fixture_id)
 
-            # ESTRATÉGIA 2: JOGO 1 x 0 ou 0 x 1 (Over 1.5 HT) -> 15' a 35'
+            # ------------------------------------------------------------------
+            # B) OVER 1.5 HT (Placar 1x0 ou 0x1 | 15' a 35' min)
+            # ------------------------------------------------------------------
             elif total_gols == 1 and 15 <= tempo_minuto <= 35:
                 url_stats = f"https://v3.football.api-sports.io/fixtures/statistics?fixture={fixture_id}"
                 try:
@@ -141,39 +142,37 @@ def checar_jogos_ao_vivo():
                     stats_casa = resp_stats['response'][0]['statistics']
                     stats_fora = resp_stats['response'][1]['statistics']
 
-                    posse_casa = extrair_valor_stat(stats_casa, 'Ball Possession')
-                    posse_fora = extrair_valor_stat(stats_fora, 'Ball Possession')
-
                     atq_perigosos = extrair_valor_stat(stats_casa, 'Dangerous Attacks') + extrair_valor_stat(stats_fora, 'Dangerous Attacks')
                     appm = round(atq_perigosos / tempo_minuto, 2)
 
                     chutes_gol = extrair_valor_stat(stats_casa, 'Shots on Goal') + extrair_valor_stat(stats_fora, 'Shots on Goal')
                     chutes_fora = extrair_valor_stat(stats_casa, 'Shots off Goal') + extrair_valor_stat(stats_fora, 'Shots off Goal')
                     chutes_bloq = extrair_valor_stat(stats_casa, 'Blocked Shots') + extrair_valor_stat(stats_fora, 'Blocked Shots')
-                    finalizacoes = chutes_gol + chutes_fora + chutes_bloq
+                    finalizacoes_totais = chutes_gol + chutes_fora + chutes_bloq
                     escanteios = extrair_valor_stat(stats_casa, 'Corner Kicks') + extrair_valor_stat(stats_fora, 'Corner Kicks')
 
-                    if appm >= 1.1 and finalizacoes >= 4 and chutes_gol >= 2 and (posse_casa >= 55 or posse_fora >= 55):
+                    # Exige pressão maior (APPM >= 1.1 e 5+ finalizações) para o 2º gol do 1º tempo
+                    if appm >= 1.1 and finalizacoes_totais >= 5 and chutes_gol >= 2:
                         mensagem = (
-                            f"⚡ *ALERTA DE REAÇÃO (OVER 1.5 HT)* ⚡\n\n"
+                            f"⚡ *RADAR OVER 1.5 HT (BUSCA PELO 2º GOL)* ⚡\n\n"
                             f"🏆 *Liga:* {pais_liga} - {nome_liga}\n"
                             f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
                             f"⏱️ Tempo: *{tempo_minuto}' min*\n\n"
-                            f"📊 *Estatísticas Ao Vivo:*\n"
-                            f"• APPM (Ataques/min): *{appm}*\n"
-                            f"• Finalizações Totais: *{finalizacoes}*\n"
-                            f"• Chutes no Gol: *{chutes_gol}*\n"
-                            f"• Escanteios: *{escanteios}*\n\n"
-                            f"🔥 *Jogo movimentado com alta pressão por mais um gol!*"
+                            f"📊 *Estatísticas em Tempo Real:*\n"
+                            f"🔥 *APPM (Pressão):* `{appm}` (mínimo 1.1/min)\n"
+                            f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
+                            f"👞 *Finalizações Totais:* `{finalizacoes_totais}`\n"
+                            f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                            f"💡 *Ação:* Jogo muito aberto! Confira a linha de **Over 1.5 HT** na sua casa de apostas!"
                         )
                         enviar_alerta(mensagem)
                         jogos_notificados.add(fixture_id)
 
         # ======================================================================
-        # REGRAS DE 2º TEMPO (2H) -> ESTRATÉGIA OVER LIMITE FT
+        # 2. ESTRATÉGIA DE 2º TEMPO (2H) -> OVER LIMITE FT
         # ======================================================================
         elif status == '2H':
-            # Janela de 65' a 78' minutos | Placar parelho (diferença <= 1 gol)
+            # Janela: 65' a 78' min | Diferença máxima no placar: 1 gol (diferença <= 1)
             if 65 <= tempo_minuto <= 78 and abs(gols_c - gols_f) <= 1:
                 url_stats = f"https://v3.football.api-sports.io/fixtures/statistics?fixture={fixture_id}"
                 try:
@@ -185,31 +184,29 @@ def checar_jogos_ao_vivo():
                     stats_casa = resp_stats['response'][0]['statistics']
                     stats_fora = resp_stats['response'][1]['statistics']
 
-                    posse_casa = extrair_valor_stat(stats_casa, 'Ball Possession')
-                    posse_fora = extrair_valor_stat(stats_fora, 'Ball Possession')
-
                     atq_perigosos = extrair_valor_stat(stats_casa, 'Dangerous Attacks') + extrair_valor_stat(stats_fora, 'Dangerous Attacks')
                     appm = round(atq_perigosos / tempo_minuto, 2)
 
                     chutes_gol = extrair_valor_stat(stats_casa, 'Shots on Goal') + extrair_valor_stat(stats_fora, 'Shots on Goal')
                     chutes_fora = extrair_valor_stat(stats_casa, 'Shots off Goal') + extrair_valor_stat(stats_fora, 'Shots off Goal')
                     chutes_bloq = extrair_valor_stat(stats_casa, 'Blocked Shots') + extrair_valor_stat(stats_fora, 'Blocked Shots')
-                    finalizacoes = chutes_gol + chutes_fora + chutes_bloq
+                    finalizacoes_totais = chutes_gol + chutes_fora + chutes_bloq
                     escanteios = extrair_valor_stat(stats_casa, 'Corner Kicks') + extrair_valor_stat(stats_fora, 'Corner Kicks')
 
-                    if appm >= 1.0 and finalizacoes >= 8 and chutes_gol >= 3 and (posse_casa >= 55 or posse_fora >= 55):
+                    # No 2º tempo exige acumulado maior de finalizações (>= 8) e APPM >= 1.0
+                    if appm >= 1.0 and finalizacoes_totais >= 8 and chutes_gol >= 3:
                         proximo_gol = total_gols + 0.5
                         mensagem = (
-                            f"🎯 *ALERTA OVER LIMITE FT (+{proximo_gol} GOLS)* 🎯\n\n"
+                            f"🎯 *RADAR OVER LIMITE FT (+{proximo_gol} GOLS)* 🎯\n\n"
                             f"🏆 *Liga:* {pais_liga} - {nome_liga}\n"
                             f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
                             f"⏱️ Tempo: *{tempo_minuto}' min*\n\n"
-                            f"📊 *Estatísticas do Jogo:*\n"
-                            f"• APPM (Ataques/min): *{appm}*\n"
-                            f"• Finalizações Totais: *{finalizacoes}*\n"
-                            f"• Chutes no Gol: *{chutes_gol}*\n"
-                            f"• Escanteios: *{escanteios}*\n\n"
-                            f"🔥 *Alta pressão no 2º tempo! Excelente janela para Over Limite.*"
+                            f"📊 *Estatísticas em Tempo Real:*\n"
+                            f"🔥 *APPM (Pressão):* `{appm}` (mínimo 1.0/min)\n"
+                            f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
+                            f"👞 *Finalizações Totais:* `{finalizacoes_totais}`\n"
+                            f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                            f"💡 *Ação:* Reta final movimentada! Confira a linha de **Over Limite (+{proximo_gol} Gols)**!"
                         )
                         enviar_alerta(mensagem)
                         jogos_notificados.add(fixture_id)

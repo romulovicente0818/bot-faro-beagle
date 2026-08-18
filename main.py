@@ -1,5 +1,5 @@
 import time
-import requests
+import cloudscraper
 from datetime import datetime
 import zoneinfo
 
@@ -10,12 +10,14 @@ TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 # ==============================================================================
 
-headers_sofascore = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Accept': '*/*',
-    'Accept-Language': 'pt-BR,pt;q=0.9',
-    'Cache-Control': 'no-cache'
-}
+# Cria o scraper capaz de burlar o Cloudflare/Erro 403
+scraper = cloudscraper.create_scraper(
+    browser={
+        'browser': 'chrome',
+        'platform': 'windows',
+        'desktop': True
+    }
+)
 
 jogos_notificados = set()
 
@@ -31,7 +33,7 @@ def enviar_alerta(mensagem):
         "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        scraper.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Erro ao enviar Telegram: {e}")
 
@@ -39,7 +41,7 @@ def obter_estatisticas_sofascore(event_id):
     """Obtém os dados detalhados da partida no Sofascore."""
     url = f"https://api.sofascore.com/api/v3/event/{event_id}/statistics"
     try:
-        res = requests.get(url, headers=headers_sofascore, timeout=10)
+        res = scraper.get(url, timeout=10)
         if res.status_code == 200:
             return res.json().get('statistics', [])
     except Exception:
@@ -47,8 +49,7 @@ def obter_estatisticas_sofascore(event_id):
     return []
 
 def extrair_stat_sofascore(stats_data, group_name, item_name):
-    """Extrai estatísticas como Chutes, Ataques e Escanteios."""
-    total = 0
+    """Extrai estatísticas como Chutes e Escanteios."""
     for period in stats_data:
         if period.get('period') == 'ALL':
             for group in period.get('groups', []):
@@ -57,7 +58,7 @@ def extrair_stat_sofascore(stats_data, group_name, item_name):
                         val_home = int(item.get('home', '0').replace('%', '')) if str(item.get('home')).isdigit() else 0
                         val_away = int(item.get('away', '0').replace('%', '')) if str(item.get('away')).isdigit() else 0
                         return val_home + val_away
-    return total
+    return 0
 
 def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
@@ -66,7 +67,7 @@ def checar_jogos_ao_vivo():
     url = "https://api.sofascore.com/api/v3/events/live"
 
     try:
-        response = requests.get(url, headers=headers_sofascore, timeout=15)
+        response = scraper.get(url, timeout=15)
         if response.status_code != 200:
             print(f"[{horario}] Status retornado: {response.status_code}")
             return
@@ -80,7 +81,6 @@ def checar_jogos_ao_vivo():
             if event_id in jogos_notificados:
                 continue
 
-            # Valida se é futebol
             if item.get('sport', {}).get('name') != 'Football':
                 continue
 
@@ -95,14 +95,12 @@ def checar_jogos_ao_vivo():
             gols_f = item.get('awayScore', {}).get('current', 0)
             total_gols = gols_c + gols_f
 
-            # Identificação de tempo de jogo
             eh_1h = time_status == 'inprogress' and '1st' in status_desc.lower()
             eh_2h = time_status == 'inprogress' and '2nd' in status_desc.lower()
 
             if not (eh_1h or eh_2h):
                 continue
 
-            # Busca estatísticas
             stats = obter_estatisticas_sofascore(event_id)
             if not stats:
                 continue
@@ -168,7 +166,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando em segundo plano...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando via Cloudscraper...")
 
     while True:
         try:

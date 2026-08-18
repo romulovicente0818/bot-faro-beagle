@@ -15,16 +15,6 @@ TERMOS_IGNORADOS = [
     'sub17', 'sub19', 'sub20', 'sub21', 'sub23',
     'women', 'feminino', 'femeni', 'women\'s', 'youth', 'juniors', 'reserve'
 ]
-
-BANDEIRAS_CUSTOMIZADAS = {
-    'england': '🇬🇧',
-    'scotland': '🏴󠁧󠁢󠁳󠁣󠁴󠁿',
-    'wales': '🏴󠁧󠁢󠁷󠁬󠁳󠁿',
-    'international': '🌐',
-    'europe': '🇪🇺',
-    'world': '🌍',
-    'south-america': '🌎'
-}
 # ==============================================================================
 
 scraper = cloudscraper.create_scraper(
@@ -40,23 +30,6 @@ jogos_notificados = set()
 def obter_horario_brasil():
     fuso_br = zoneinfo.ZoneInfo('America/Sao_Paulo')
     return datetime.now(fuso_br)
-
-def obter_bandeira_emoji(country_code, country_name):
-    if not country_code and not country_name:
-        return '⚽'
-
-    code = country_code.lower().strip() if country_code else ''
-    name = country_name.lower().strip() if country_name else ''
-
-    if name in BANDEIRAS_CUSTOMIZADAS:
-        return BANDEIRAS_CUSTOMIZADAS[name]
-    if code in BANDEIRAS_CUSTOMIZADAS:
-        return BANDEIRAS_CUSTOMIZADAS[code]
-
-    if len(code) == 2 and code.isalpha():
-        return chr(ord(code[0].upper()) + 127397) + chr(ord(code[1].upper()) + 127397)
-    
-    return '🌐'
 
 def enviar_alerta(mensagem):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -130,10 +103,14 @@ def checar_jogos_ao_vivo():
             if not eh_liga_valida(nome_liga):
                 continue
 
+            # Extração do País para formar 'País - Nome da Liga'
             category = item.get('tournament', {}).get('category', {})
-            country_code = category.get('alpha2')
-            country_name = category.get('name')
-            bandeira = obter_bandeira_emoji(country_code, country_name)
+            nome_pais = category.get('name', '')
+
+            if nome_pais and nome_pais.lower() not in nome_liga.lower():
+                liga_formatada = f"{nome_pais} - {nome_liga}"
+            else:
+                liga_formatada = nome_liga
 
             status_desc = item.get('status', {}).get('description', '')
             time_status = item.get('status', {}).get('type', '')
@@ -166,7 +143,7 @@ def checar_jogos_ao_vivo():
                 if finalizacoes >= 3 or escanteios >= 2:
                     mensagem = (
                         f"🚨 *FARO DE BEAGLE: OVER 0.5 HT (0x0)* 🚨\n\n"
-                        f"{bandeira} *Liga:* {nome_liga}\n"
+                        f"🏆 *Liga:* {liga_formatada}\n"
                         f"⚽ *{time_casa} 0 x 0 {time_fora}*\n"
                         f"⏱️ Status: *1º Tempo em andamento*\n\n"
                         f"📊 *Estatísticas em Tempo Real:*\n"
@@ -183,7 +160,7 @@ def checar_jogos_ao_vivo():
                 if finalizacoes >= 4:
                     mensagem = (
                         f"⚡ *FARO DE BEAGLE: OVER 1.5 HT (2º GOL)* ⚡\n\n"
-                        f"{bandeira} *Liga:* {nome_liga}\n"
+                        f"🏆 *Liga:* {liga_formatada}\n"
                         f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
                         f"⏱️ Status: *1º Tempo em andamento*\n\n"
                         f"📊 *Estatísticas em Tempo Real:*\n"
@@ -200,7 +177,7 @@ def checar_jogos_ao_vivo():
                     proximo_gol = total_gols + 0.5
                     mensagem = (
                         f"🎯 *FARO DE BEAGLE: OVER LIMITE FT (+{proximo_gol})* 🎯\n\n"
-                        f"{bandeira} *Liga:* {nome_liga}\n"
+                        f"🏆 *Liga:* {liga_formatada}\n"
                         f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
                         f"⏱️ Status: *2º Tempo em andamento*\n\n"
                         f"📊 *Estatísticas em Tempo Real:*\n"
@@ -217,7 +194,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando limpo...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando...")
 
     while True:
         try:

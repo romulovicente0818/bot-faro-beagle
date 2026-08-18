@@ -33,8 +33,10 @@ scraper = cloudscraper.create_scraper(
     }
 )
 
-# Controle de jogos já alertados para evitar envios duplicados
-jogos_notificados = set()
+# Controle de envio independente por estratégia
+notificados_05_ht = set()
+notificados_15_ht = set()
+notificados_limite_ft = set()
 
 def obter_horario_brasil():
     fuso_br = zoneinfo.ZoneInfo('America/Sao_Paulo')
@@ -131,10 +133,6 @@ def checar_jogos_ao_vivo():
         for item in jogos:
             event_id = item.get('id')
 
-            # Trava contra repetição: ignora jogos que já geraram sinal
-            if event_id in jogos_notificados:
-                continue
-
             nome_liga = item.get('tournament', {}).get('name', 'Liga')
             time_casa = item.get('homeTeam', {}).get('name', 'Casa')
             time_fora = item.get('awayTeam', {}).get('name', 'Fora')
@@ -178,7 +176,7 @@ def checar_jogos_ao_vivo():
             # 1. OVER 0.5 HT (0x0) -> 15' a 25' do 1º Tempo
             # ==================================================================
             if total_gols == 0 and eh_1h:
-                if 15 <= minuto_num <= 25:
+                if event_id not in notificados_05_ht and 15 <= minuto_num <= 25:
                     if chutes_gol >= 2 or finalizacoes >= 6:
                         mensagem = (
                             f"🚨 *FARO DE BEAGLE: OVER 0.5 HT (0x0)* 🚨\n\n"
@@ -192,13 +190,13 @@ def checar_jogos_ao_vivo():
                             f"💡 Confira a linha de **Over 0.5 HT**!"
                         )
                         enviar_alerta(mensagem)
-                        jogos_notificados.add(event_id)
+                        notificados_05_ht.add(event_id)
 
             # ==================================================================
             # 2. OVER 1.5 HT (1x0 / 0x1) -> 18' a 28' do 1º Tempo
             # ==================================================================
             elif total_gols == 1 and eh_1h:
-                if 18 <= minuto_num <= 28:
+                if event_id not in notificados_15_ht and 18 <= minuto_num <= 28:
                     if chutes_gol >= 2 and finalizacoes >= 5:
                         mensagem = (
                             f"⚡ *FARO DE BEAGLE: OVER 1.5 HT (2º GOL)* ⚡\n\n"
@@ -211,13 +209,13 @@ def checar_jogos_ao_vivo():
                             f"💡 Confira a linha de **Over 1.5 HT**!"
                         )
                         enviar_alerta(mensagem)
-                        jogos_notificados.add(event_id)
+                        notificados_15_ht.add(event_id)
 
             # ==================================================================
             # 3. OVER LIMITE FT -> 65' a 75' do 2º Tempo
             # ==================================================================
             elif eh_2h and abs(gols_c - gols_f) <= 1 and total_gols <= 4:
-                if 65 <= minuto_num <= 75:
+                if event_id not in notificados_limite_ft and 65 <= minuto_num <= 75:
                     if chutes_gol >= 3 and finalizacoes >= 8:
                         proximo_gol = total_gols + 0.5
                         mensagem = (
@@ -232,14 +230,14 @@ def checar_jogos_ao_vivo():
                             f"💡 Confira a linha de **Over Limite (+{proximo_gol})**!"
                         )
                         enviar_alerta(mensagem)
-                        jogos_notificados.add(event_id)
+                        notificados_limite_ft.add(event_id)
 
     except Exception as e:
         print(f"Erro na consulta: {e}")
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando com alertas independentes por mercado...")
 
     while True:
         try:

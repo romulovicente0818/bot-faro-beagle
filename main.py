@@ -9,7 +9,6 @@ import zoneinfo
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 
-# Filtros contra jogos de base, amadores e femininos
 TERMOS_IGNORADOS = [
     # Categorias de Base
     'u15', 'u16', 'u17', 'u18', 'u19', 'u20', 'u21', 'u22', 'u23', 
@@ -19,9 +18,10 @@ TERMOS_IGNORADOS = [
     'proliga', 'liga pro', 'cup u', 'league u', 'trophy u', 'championship u',
     # Feminino
     'women', 'feminino', 'femeni', 'women\'s', 'female', ' w ',
-    # Campeonatos Amadores
-    'amateur', 'amador', 'regionaliga', 'oberliga', 
-    'landesliga', 'district', 'county', 'regional league', 'non-league'
+    # Ligas Menores / Muito Under / Amadoras
+    'amateur', 'amador', 'regionaliga', 'oberliga', 'landesliga', 
+    'district', 'county', 'regional league', 'non-league',
+    'primera c', 'primera d', 'tercera'
 ]
 # ==============================================================================
 
@@ -33,6 +33,7 @@ scraper = cloudscraper.create_scraper(
     }
 )
 
+# Controle de jogos já alertados para evitar envios duplicados
 jogos_notificados = set()
 
 def obter_horario_brasil():
@@ -79,41 +80,37 @@ def extrair_stat_sofascore(stats_data, item_name):
     return 0
 
 def eh_partida_valida(nome_liga, time_casa, time_fora):
-    """Filtra se o nome da liga OU de qualquer time contiver termos de base/feminino/amador."""
     texto_completo = f" {nome_liga} {time_casa} {time_fora} ".lower()
-    
     for termo in TERMOS_IGNORADOS:
         if termo in texto_completo:
             return False
     return True
 
 def extrair_minutagem_e_numero(item, eh_1h, eh_2h):
-    """Extrai e formata o minuto exato no momento do disparo (ex: 20' do 1º tempo)."""
     status_desc = str(item.get('status', {}).get('description', '')).strip()
-    
     minuto = None
-    time_data = item.get('time', {})
-    
-    # Tentativa 1: Leitura direta do relógio da partida em segundos
-    if isinstance(time_data, dict) and time_data.get('currentPeriodStartTimestamp'):
-        now_ts = int(time.time())
-        start_ts = time_data.get('currentPeriodStartTimestamp')
-        m_calc = (now_ts - start_ts) // 60
-        if eh_2h:
-            m_calc += 45
-        if 1 <= m_calc <= 120:
-            minuto = m_calc
 
-    # Tentativa 2: Extração via descrição do status (Ex: "20'", "45+2'")
-    if not minuto and "'" in status_desc:
-        min_limpo = status_desc.replace("'", "").split('+')[0]
+    if "'" in status_desc:
+        min_limpo = status_desc.replace("'", "").split('+')[0].strip()
         if min_limpo.isdigit():
             minuto = int(min_limpo)
 
-    tempo_rotulo = "1º tempo" if eh_1h else "2º tempo" if eh_2h else "tempo"
-    texto_formatado = f"{minuto}' do {tempo_rotulo}" if minuto else f"Em andamento ({tempo_rotulo})"
+    if not minuto:
+        time_data = item.get('time', {})
+        if isinstance(time_data, dict) and time_data.get('currentPeriodStartTimestamp'):
+            now_ts = int(time.time())
+            start_ts = time_data.get('currentPeriodStartTimestamp')
+            m_calc = (now_ts - start_ts) // 60
+            if eh_2h:
+                m_calc += 45
+            if 1 <= m_calc <= 120:
+                minuto = m_calc
 
-    return texto_formatado, minuto
+    if minuto:
+        tempo_rotulo = "1º tempo" if eh_1h else "2º tempo"
+        return f"{minuto}' do {tempo_rotulo}", minuto
+
+    return None, None
 
 def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
@@ -133,6 +130,8 @@ def checar_jogos_ao_vivo():
 
         for item in jogos:
             event_id = item.get('id')
+
+            # Trava contra repetição: ignora jogos que já geraram sinal
             if event_id in jogos_notificados:
                 continue
 
@@ -140,7 +139,6 @@ def checar_jogos_ao_vivo():
             time_casa = item.get('homeTeam', {}).get('name', 'Casa')
             time_fora = item.get('awayTeam', {}).get('name', 'Fora')
             
-            # FILTRO COMPLETO: Analisa Liga, Time da Casa e Time Visitante
             if not eh_partida_valida(nome_liga, time_casa, time_fora):
                 continue
 
@@ -165,9 +163,7 @@ def checar_jogos_ao_vivo():
             if not (eh_1h or eh_2h):
                 continue
 
-            # Obtenção do tempo formatado e do número do minuto
             minutagem, minuto_num = extrair_minutagem_e_numero(item, eh_1h, eh_2h)
-
             if not minuto_num:
                 continue
 
@@ -178,15 +174,12 @@ def checar_jogos_ao_vivo():
             finalizacoes = chutes_gol + chutes_fora
             escanteios = extrair_stat_sofascore(stats, 'Corner kicks')
 
-            if finalizacoes == 0 and escanteios == 0:
-                continue
-
             # ==================================================================
             # 1. OVER 0.5 HT (0x0) -> 15' a 25' do 1º Tempo
             # ==================================================================
             if total_gols == 0 and eh_1h:
                 if 15 <= minuto_num <= 25:
-                    if finalizacoes >= 3 or escanteios >= 2:
+                    if chutes_gol >= 2 or finalizacoes >= 6:
                         mensagem = (
                             f"🚨 *FARO DE BEAGLE: OVER 0.5 HT (0x0)* 🚨\n\n"
                             f"🏆 *Liga:* {liga_formatada}\n"
@@ -206,7 +199,7 @@ def checar_jogos_ao_vivo():
             # ==================================================================
             elif total_gols == 1 and eh_1h:
                 if 18 <= minuto_num <= 28:
-                    if finalizacoes >= 4:
+                    if chutes_gol >= 2 and finalizacoes >= 5:
                         mensagem = (
                             f"⚡ *FARO DE BEAGLE: OVER 1.5 HT (2º GOL)* ⚡\n\n"
                             f"🏆 *Liga:* {liga_formatada}\n"
@@ -225,7 +218,7 @@ def checar_jogos_ao_vivo():
             # ==================================================================
             elif eh_2h and abs(gols_c - gols_f) <= 1 and total_gols <= 4:
                 if 65 <= minuto_num <= 75:
-                    if finalizacoes >= 7:
+                    if chutes_gol >= 3 and finalizacoes >= 8:
                         proximo_gol = total_gols + 0.5
                         mensagem = (
                             f"🎯 *FARO DE BEAGLE: OVER LIMITE FT (+{proximo_gol})* 🎯\n\n"

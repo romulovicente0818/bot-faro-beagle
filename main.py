@@ -6,7 +6,7 @@ import requests
 # ==============================================================================
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
-API_SPORTS_KEY = '27c8ac6d4f3de1f3938be3ffcfa100be'
+API_SPORTS_KEY = 'bd887673e917db00d76a7cf80a4e508c'
 # ==============================================================================
 
 headers_api = {

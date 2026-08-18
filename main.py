@@ -8,8 +8,6 @@ import zoneinfo
 # ==============================================================================
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
-
-# Insira aqui a sua API Key da API-Sports
 API_KEY = '9b7d7f5f312027c13998f1bf28aa506f'
 # ==============================================================================
 

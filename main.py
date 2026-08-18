@@ -8,11 +8,14 @@ import zoneinfo
 # ==============================================================================
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
-API_KEY = '9b7d7f5f312027c13998f1bf28aa506f'
+
+# Chave gerada via RapidAPI
+RAPIDAPI_KEY = '9b7d7f5f312027c13998f1bf28aa506f'
 # ==============================================================================
 
 headers_api = {
-    'x-apisports-key': API_KEY
+    'x-rapidapi-key': RAPIDAPI_KEY,
+    'x-rapidapi-host': 'api-football-v1.p.rapidapi.com'
 }
 
 jogos_notificados = set()
@@ -34,8 +37,8 @@ def enviar_alerta(mensagem):
         print(f"Erro ao enviar Telegram: {e}")
 
 def obter_estatisticas_fixture(fixture_id):
-    """Consulta os dados estatísticos da partida na API-Sports."""
-    url = f"https://v3.football.api-sports.io/fixtures/statistics?fixture={fixture_id}"
+    """Consulta os dados estatísticos da partida na RapidAPI."""
+    url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures/statistics?fixture={fixture_id}"
     try:
         response = requests.get(url, headers=headers_api, timeout=10)
         data = response.json()
@@ -59,15 +62,18 @@ def extrair_stat(stats_list, stat_name):
 
 def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario}] Checando partidas ao vivo via API-Sports (Métrica de Pressão)...")
+    print(f"[{horario}] Checando partidas ao vivo via RapidAPI (Métrica APM)...")
 
-    url = "https://v3.football.api-sports.io/fixtures?live=all"
+    url = "https://api-football-v1.p.rapidapi.com/v3/fixtures?live=all"
 
     try:
         response = requests.get(url, headers=headers_api, timeout=15)
         data = response.json()
+        
+        if data.get('errors'):
+            print(f"[{horario}] Resposta da RapidAPI: {data.get('errors')}")
     except Exception as e:
-        print(f"Erro na requisição da API-Sports: {e}")
+        print(f"Erro na requisição da RapidAPI: {e}")
         return
 
     jogos = data.get('response', [])
@@ -118,7 +124,7 @@ def checar_jogos_ao_vivo():
             # Métrica de Pressão: Ataques Perigosos por Minuto (APM)
             apm = round(atq_perigosos / elapsed, 2)
 
-            # --- ESTRATÉGIA 1: OVER 0.5 HT (0x0 + Alta Pressão APM >= 1.0) ---
+            # --- ESTRATÉGIA 1: OVER 0.5 HT (0x0 + APM >= 1.0) ---
             if total_gols == 0 and status_short == '1H' and elapsed >= 15:
                 if apm >= 1.0 and finalizacoes_totais >= 3:
                     mensagem = (
@@ -137,7 +143,7 @@ def checar_jogos_ao_vivo():
                     enviar_alerta(mensagem)
                     jogos_notificados.add(fixture_id)
 
-            # --- ESTRATÉGIA 2: OVER 1.5 HT (1x0 ou 0x1 + Pressão Sustentada APM >= 0.9) ---
+            # --- ESTRATÉGIA 2: OVER 1.5 HT (1x0 ou 0x1 + APM >= 0.9) ---
             elif total_gols == 1 and status_short == '1H' and elapsed >= 20:
                 if apm >= 0.9 and finalizacoes_totais >= 4:
                     mensagem = (
@@ -177,6 +183,12 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
+    msg_inicio = (
+        f"🐶⚽ *FARO DE BEAGLE (MODO RAPIDAPI)*\n\n"
+        f"📡 Conectado via RapidAPI com monitoramento de ataques por minuto (APM).\n"
+        f"⏰ [{horario_inicio}]"
+    )
+    enviar_alerta(msg_inicio)
 
     while True:
         try:

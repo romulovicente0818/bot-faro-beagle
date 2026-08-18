@@ -244,13 +244,13 @@ if __name__ == '__main__':
             agora_br = obter_horario_brasil()
             hora_atual = agora_br.hour
 
-            if 8 <= hora_atual < 20:
+            if 8 <= hora_atual < 24:
                 checar_jogos_ao_vivo()
             else:
                 horario_formatado = agora_br.strftime('%H:%M:%S')
-                print(f"[{horario_formatado}] Bot em repouso fora do horário (08h às 20h).")
+                print(f"[{horario_formatado}] Bot em repouso fora do horário (08h às 00h).")
 
         except Exception as e:
             print(f"Aviso no ciclo principal: {e}")
 
-        time.sleep(240)
+        time.sleep(300)

@@ -9,16 +9,16 @@ import zoneinfo
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 
-# Filtros reforçados contra jogos de base, amadores e femininos
+# Filtros contra jogos de base, amadores e femininos
 TERMOS_IGNORADOS = [
-    # Categorias de Base (Extensivo)
+    # Categorias de Base
     'u15', 'u16', 'u17', 'u18', 'u19', 'u20', 'u21', 'u22', 'u23', 
     'sub-15', 'sub-16', 'sub-17', 'sub-18', 'sub-19', 'sub-20', 'sub-21', 'sub-22', 'sub-23', 
     'sub15', 'sub16', 'sub17', 'sub18', 'sub19', 'sub20', 'sub21', 'sub22', 'sub23',
     ' youth', 'youth ', 'juniors', 'junior', 'reserve', 'reserves', 'academy',
-    'proliga', 'liga pro', 'cup u', 'league u', 'trophy u', ' championship u',
+    'proliga', 'liga pro', 'cup u', 'league u', 'trophy u', 'championship u',
     # Feminino
-    'women', 'feminino', 'femeni', 'women\'s', ' female',
+    'women', 'feminino', 'femeni', 'women\'s', 'female', ' w ',
     # Campeonatos Amadores
     'amateur', 'amador', 'regionaliga', 'oberliga', 
     'landesliga', 'district', 'county', 'regional league', 'non-league'
@@ -61,34 +61,6 @@ def obter_estatisticas_sofascore(event_id):
         pass
     return []
 
-def obter_odds_sofascore(event_id):
-    """Consulta cotações ao vivo disponíveis no Sofascore."""
-    url = f"https://api.sofascore.com/api/v1/event/{event_id}/odds/1/all"
-    try:
-        res = scraper.get(url, timeout=10)
-        if res.status_code == 200:
-            markets = res.json().get('markets', [])
-            texto_odds = []
-            
-            for m in markets:
-                choices = m.get('choices', [])
-                for choice in choices:
-                    name = choice.get('name', '')
-                    odd_val = None
-                    if choice.get('initialOdd'):
-                        odd_val = choice.get('initialOdd') / 100
-                    if choice.get('currentOdd'):
-                        odd_val = choice.get('currentOdd') / 100
-                        
-                    if odd_val and odd_val > 1.0:
-                        texto_odds.append(f"• *{name}:* `{odd_val:.2f}`")
-                        
-            if texto_odds:
-                return "\n💵 *Odds no Momento:*\n" + "\n".join(texto_odds[:4])
-    except Exception:
-        pass
-    return "\n💵 *Odds:* `Não disponíveis no ao vivo`"
-
 def extrair_stat_sofascore(stats_data, item_name):
     if not stats_data:
         return 0
@@ -106,35 +78,42 @@ def extrair_stat_sofascore(stats_data, item_name):
                         return val_home + val_away
     return 0
 
-def eh_liga_valida(nome_liga):
-    """Filtro rigoroso contra ligas de base, femininas e amatórias."""
-    nome_lower = f" {nome_liga.lower()} "
+def eh_partida_valida(nome_liga, time_casa, time_fora):
+    """Filtra se o nome da liga OU de qualquer time contiver termos de base/feminino/amador."""
+    texto_completo = f" {nome_liga} {time_casa} {time_fora} ".lower()
+    
     for termo in TERMOS_IGNORADOS:
-        if termo in nome_lower:
+        if termo in texto_completo:
             return False
     return True
 
-def extrair_minutagem_formatada(item, eh_1h, eh_2h):
-    """Formata o tempo no padrão exacto 'X' do 1º tempo' ou 'X' do 2º tempo'."""
+def extrair_minutagem_e_numero(item, eh_1h, eh_2h):
+    """Extrai e formata o minuto exato no momento do disparo (ex: 20' do 1º tempo)."""
     status_desc = str(item.get('status', {}).get('description', '')).strip()
     
-    time_data = item.get('time', {})
     minuto = None
+    time_data = item.get('time', {})
+    
+    # Tentativa 1: Leitura direta do relógio da partida em segundos
+    if isinstance(time_data, dict) and time_data.get('currentPeriodStartTimestamp'):
+        now_ts = int(time.time())
+        start_ts = time_data.get('currentPeriodStartTimestamp')
+        m_calc = (now_ts - start_ts) // 60
+        if eh_2h:
+            m_calc += 45
+        if 1 <= m_calc <= 120:
+            minuto = m_calc
 
-    if isinstance(time_data, dict) and time_data.get('played'):
-        minuto = time_data.get('played') // 60
-
+    # Tentativa 2: Extração via descrição do status (Ex: "20'", "45+2'")
     if not minuto and "'" in status_desc:
         min_limpo = status_desc.replace("'", "").split('+')[0]
         if min_limpo.isdigit():
             minuto = int(min_limpo)
 
     tempo_rotulo = "1º tempo" if eh_1h else "2º tempo" if eh_2h else "tempo"
+    texto_formatado = f"{minuto}' do {tempo_rotulo}" if minuto else f"Em andamento ({tempo_rotulo})"
 
-    if minuto:
-        return f"{minuto}' do {tempo_rotulo}"
-    
-    return status_desc or f"Em andamento ({tempo_rotulo})"
+    return texto_formatado, minuto
 
 def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
@@ -158,9 +137,11 @@ def checar_jogos_ao_vivo():
                 continue
 
             nome_liga = item.get('tournament', {}).get('name', 'Liga')
+            time_casa = item.get('homeTeam', {}).get('name', 'Casa')
+            time_fora = item.get('awayTeam', {}).get('name', 'Fora')
             
-            # FILTRO: Descarta categorias de base
-            if not eh_liga_valida(nome_liga):
+            # FILTRO COMPLETO: Analisa Liga, Time da Casa e Time Visitante
+            if not eh_partida_valida(nome_liga, time_casa, time_fora):
                 continue
 
             category = item.get('tournament', {}).get('category', {})
@@ -174,9 +155,6 @@ def checar_jogos_ao_vivo():
             status_desc = item.get('status', {}).get('description', '')
             time_status = item.get('status', {}).get('type', '')
 
-            time_casa = item.get('homeTeam', {}).get('name', 'Casa')
-            time_fora = item.get('awayTeam', {}).get('name', 'Fora')
-
             gols_c = item.get('homeScore', {}).get('current', 0)
             gols_f = item.get('awayScore', {}).get('current', 0)
             total_gols = gols_c + gols_f
@@ -187,8 +165,11 @@ def checar_jogos_ao_vivo():
             if not (eh_1h or eh_2h):
                 continue
 
-            # Formatação do tempo ex: 20' do 1º tempo
-            minutagem = extrair_minutagem_formatada(item, eh_1h, eh_2h)
+            # Obtenção do tempo formatado e do número do minuto
+            minutagem, minuto_num = extrair_minutagem_e_numero(item, eh_1h, eh_2h)
+
+            if not minuto_num:
+                continue
 
             stats = obter_estatisticas_sofascore(event_id)
             
@@ -200,62 +181,65 @@ def checar_jogos_ao_vivo():
             if finalizacoes == 0 and escanteios == 0:
                 continue
 
-            # Busca odds da partida
-            bloco_odds = obter_odds_sofascore(event_id)
-
-            # Estratégia 1: Over 0.5 HT (0x0)
+            # ==================================================================
+            # 1. OVER 0.5 HT (0x0) -> 15' a 25' do 1º Tempo
+            # ==================================================================
             if total_gols == 0 and eh_1h:
-                if finalizacoes >= 3 or escanteios >= 2:
-                    mensagem = (
-                        f"🚨 *FARO DE BEAGLE: OVER 0.5 HT (0x0)* 🚨\n\n"
-                        f"🏆 *Liga:* {liga_formatada}\n"
-                        f"⚽ *{time_casa} 0 x 0 {time_fora}*\n"
-                        f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
-                        f"📊 *Estatísticas em Tempo Real:*\n"
-                        f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
-                        f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
-                        f"🚩 *Escanteios:* `{escanteios}`\n"
-                        f"{bloco_odds}\n\n"
-                        f"💡 Confira a linha de **Over 0.5 HT**!"
-                    )
-                    enviar_alerta(mensagem)
-                    jogos_notificados.add(event_id)
+                if 15 <= minuto_num <= 25:
+                    if finalizacoes >= 3 or escanteios >= 2:
+                        mensagem = (
+                            f"🚨 *FARO DE BEAGLE: OVER 0.5 HT (0x0)* 🚨\n\n"
+                            f"🏆 *Liga:* {liga_formatada}\n"
+                            f"⚽ *{time_casa} 0 x 0 {time_fora}*\n"
+                            f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
+                            f"📊 *Estatísticas em Tempo Real:*\n"
+                            f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
+                            f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
+                            f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                            f"💡 Confira a linha de **Over 0.5 HT**!"
+                        )
+                        enviar_alerta(mensagem)
+                        jogos_notificados.add(event_id)
 
-            # Estratégia 2: Over 1.5 HT (1x0 / 0x1)
+            # ==================================================================
+            # 2. OVER 1.5 HT (1x0 / 0x1) -> 18' a 28' do 1º Tempo
+            # ==================================================================
             elif total_gols == 1 and eh_1h:
-                if finalizacoes >= 4:
-                    mensagem = (
-                        f"⚡ *FARO DE BEAGLE: OVER 1.5 HT (2º GOL)* ⚡\n\n"
-                        f"🏆 *Liga:* {liga_formatada}\n"
-                        f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
-                        f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
-                        f"📊 *Estatísticas em Tempo Real:*\n"
-                        f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
-                        f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
-                        f"{bloco_odds}\n\n"
-                        f"💡 Confira a linha de **Over 1.5 HT**!"
-                    )
-                    enviar_alerta(mensagem)
-                    jogos_notificados.add(event_id)
+                if 18 <= minuto_num <= 28:
+                    if finalizacoes >= 4:
+                        mensagem = (
+                            f"⚡ *FARO DE BEAGLE: OVER 1.5 HT (2º GOL)* ⚡\n\n"
+                            f"🏆 *Liga:* {liga_formatada}\n"
+                            f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
+                            f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
+                            f"📊 *Estatísticas em Tempo Real:*\n"
+                            f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
+                            f"👞 *Finalizações Totais:* `{finalizacoes}`\n\n"
+                            f"💡 Confira a linha de **Over 1.5 HT**!"
+                        )
+                        enviar_alerta(mensagem)
+                        jogos_notificados.add(event_id)
 
-            # Estratégia 3: Over Limite FT (2º Tempo | Diferença <= 1 gol)
+            # ==================================================================
+            # 3. OVER LIMITE FT -> 65' a 75' do 2º Tempo
+            # ==================================================================
             elif eh_2h and abs(gols_c - gols_f) <= 1 and total_gols <= 4:
-                if finalizacoes >= 7:
-                    proximo_gol = total_gols + 0.5
-                    mensagem = (
-                        f"🎯 *FARO DE BEAGLE: OVER LIMITE FT (+{proximo_gol})* 🎯\n\n"
-                        f"🏆 *Liga:* {liga_formatada}\n"
-                        f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
-                        f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
-                        f"📊 *Estatísticas em Tempo Real:*\n"
-                        f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
-                        f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
-                        f"🚩 *Escanteios:* `{escanteios}`\n"
-                        f"{bloco_odds}\n\n"
-                        f"💡 Confira a linha de **Over Limite (+{proximo_gol})**!"
-                    )
-                    enviar_alerta(mensagem)
-                    jogos_notificados.add(event_id)
+                if 65 <= minuto_num <= 75:
+                    if finalizacoes >= 7:
+                        proximo_gol = total_gols + 0.5
+                        mensagem = (
+                            f"🎯 *FARO DE BEAGLE: OVER LIMITE FT (+{proximo_gol})* 🎯\n\n"
+                            f"🏆 *Liga:* {liga_formatada}\n"
+                            f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
+                            f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
+                            f"📊 *Estatísticas em Tempo Real:*\n"
+                            f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
+                            f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
+                            f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                            f"💡 Confira a linha de **Over Limite (+{proximo_gol})**!"
+                        )
+                        enviar_alerta(mensagem)
+                        jogos_notificados.add(event_id)
 
     except Exception as e:
         print(f"Erro na consulta: {e}")

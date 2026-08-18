@@ -10,7 +10,6 @@ TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 # ==============================================================================
 
-# Cria o scraper capaz de burlar o Cloudflare/Erro 403
 scraper = cloudscraper.create_scraper(
     browser={
         'browser': 'chrome',
@@ -38,8 +37,8 @@ def enviar_alerta(mensagem):
         print(f"Erro ao enviar Telegram: {e}")
 
 def obter_estatisticas_sofascore(event_id):
-    """Obtém os dados detalhados da partida no Sofascore."""
-    url = f"https://api.sofascore.com/api/v3/event/{event_id}/statistics"
+    """Obtém os dados detalhados da partida no Sofascore via V1."""
+    url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
     try:
         res = scraper.get(url, timeout=10)
         if res.status_code == 200:
@@ -48,12 +47,12 @@ def obter_estatisticas_sofascore(event_id):
         pass
     return []
 
-def extrair_stat_sofascore(stats_data, group_name, item_name):
+def extrair_stat_sofascore(stats_data, item_name):
     """Extrai estatísticas como Chutes e Escanteios."""
     for period in stats_data:
         if period.get('period') == 'ALL':
             for group in period.get('groups', []):
-                for item in group.get('items', []):
+                for item in group.get('statisticsItems', []):
                     if item.get('name') == item_name:
                         val_home = int(item.get('home', '0').replace('%', '')) if str(item.get('home')).isdigit() else 0
                         val_away = int(item.get('away', '0').replace('%', '')) if str(item.get('away')).isdigit() else 0
@@ -64,7 +63,8 @@ def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
     print(f"[{horario}] Faro de Beagle buscando partidas no Sofascore...")
 
-    url = "https://api.sofascore.com/api/v3/events/live"
+    # URL oficial v1 sem erro 404
+    url = "https://api.sofascore.com/api/v1/sport/football/events/live"
 
     try:
         response = scraper.get(url, timeout=15)
@@ -74,14 +74,11 @@ def checar_jogos_ao_vivo():
 
         dados = response.json()
         jogos = dados.get('events', [])
-        print(f"[{horario}] Total de partidas ao vivo: {len(jogos)}")
+        print(f"[{horario}] Total de partidas ao vivo localizadas: {len(jogos)}")
 
         for item in jogos:
             event_id = item.get('id')
             if event_id in jogos_notificados:
-                continue
-
-            if item.get('sport', {}).get('name') != 'Football':
                 continue
 
             status_desc = item.get('status', {}).get('description', '')
@@ -105,10 +102,10 @@ def checar_jogos_ao_vivo():
             if not stats:
                 continue
 
-            chutes_gol = extrair_stat_sofascore(stats, 'Shots', 'Shots on target')
-            chutes_fora = extrair_stat_sofascore(stats, 'Shots', 'Shots off target')
+            chutes_gol = extrair_stat_sofascore(stats, 'Shots on target')
+            chutes_fora = extrair_stat_sofascore(stats, 'Shots off target')
             finalizacoes = chutes_gol + chutes_fora
-            escanteios = extrair_stat_sofascore(stats, 'TVData', 'Corner kicks')
+            escanteios = extrair_stat_sofascore(stats, 'Corner kicks')
 
             # Estratégia 1: Over 0.5 HT (0x0)
             if total_gols == 0 and eh_1h:
@@ -120,7 +117,7 @@ def checar_jogos_ao_vivo():
                         f"⏱️ Status: *1º Tempo em andamento*\n\n"
                         f"📊 *Estatísticas:*\n"
                         f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
-                        f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
+                        f"m *Finalizações Totais:* `{finalizacoes}`\n"
                         f"🚩 *Escanteios:* `{escanteios}`\n\n"
                         f"💡 Confira a linha de **Over 0.5 HT**!"
                     )
@@ -166,7 +163,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando via Cloudscraper...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando via Cloudscraper no Sofascore v1...")
 
     while True:
         try:

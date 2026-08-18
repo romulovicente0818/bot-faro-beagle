@@ -16,9 +16,8 @@ TERMOS_IGNORADOS = [
     'women', 'feminino', 'femeni', 'women\'s', 'youth', 'juniors', 'reserve'
 ]
 
-# Mapeamento de códigos de países/regiões do Sofascore para Bandeiras Emoji
 BANDEIRAS_CUSTOMIZADAS = {
-    'england': '🏴󠁧󠁢󠁥󠁮󠁧 line󠁿',
+    'england': '🇬🇧',
     'scotland': '🏴󠁧󠁢󠁳󠁣󠁴󠁿',
     'wales': '🏴󠁧󠁢󠁷󠁬󠁳󠁿',
     'international': '🌐',
@@ -43,20 +42,17 @@ def obter_horario_brasil():
     return datetime.now(fuso_br)
 
 def obter_bandeira_emoji(country_code, country_name):
-    """Converte o código do país do Sofascore em Emoji de Bandeira."""
-    if not country_code:
+    if not country_code and not country_name:
         return '⚽'
 
-    code = country_code.lower().strip()
+    code = country_code.lower().strip() if country_code else ''
     name = country_name.lower().strip() if country_name else ''
 
-    # Trata casos especiais (Inglaterra, Escócia, Torneios Internacionais)
     if name in BANDEIRAS_CUSTOMIZADAS:
         return BANDEIRAS_CUSTOMIZADAS[name]
     if code in BANDEIRAS_CUSTOMIZADAS:
         return BANDEIRAS_CUSTOMIZADAS[code]
 
-    # Converte código de 2 letras (ISO Alpha-2) em Emoji de Bandeira
     if len(code) == 2 and code.isalpha():
         return chr(ord(code[0].upper()) + 127397) + chr(ord(code[1].upper()) + 127397)
     
@@ -75,7 +71,6 @@ def enviar_alerta(mensagem):
         print(f"Erro ao enviar Telegram: {e}")
 
 def obter_estatisticas_sofascore(event_id):
-    """Obtém os dados detalhados da partida no Sofascore."""
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
     try:
         res = scraper.get(url, timeout=10)
@@ -86,7 +81,6 @@ def obter_estatisticas_sofascore(event_id):
     return []
 
 def extrair_stat_sofascore(stats_data, item_name):
-    """Extrai estatísticas com validação segura contra dados ausentes/nulos."""
     if not stats_data:
         return 0
 
@@ -104,7 +98,6 @@ def extrair_stat_sofascore(stats_data, item_name):
     return 0
 
 def eh_liga_valida(nome_liga):
-    """Filtra e ignora campeonatos de base (Sub-20/21) e femininos."""
     nome_lower = nome_liga.lower()
     for termo in TERMOS_IGNORADOS:
         if termo in nome_lower:
@@ -134,11 +127,9 @@ def checar_jogos_ao_vivo():
 
             nome_liga = item.get('tournament', {}).get('name', 'Liga')
             
-            # FILTRO 1: Ignora ligas de base (Sub-20/21) e femininas
             if not eh_liga_valida(nome_liga):
                 continue
 
-            # Obtenção do País e Bandeira
             category = item.get('tournament', {}).get('category', {})
             country_code = category.get('alpha2')
             country_name = category.get('name')
@@ -160,16 +151,13 @@ def checar_jogos_ao_vivo():
             if not (eh_1h or eh_2h):
                 continue
 
-            # Busca estatísticas do jogo
             stats = obter_estatisticas_sofascore(event_id)
             
-            # Extrai estatísticas (retorna 0 caso a API não disponibilize no jogo)
             chutes_gol = extrair_stat_sofascore(stats, 'Shots on target')
             chutes_fora = extrair_stat_sofascore(stats, 'Shots off target')
             finalizacoes = chutes_gol + chutes_fora
             escanteios = extrair_stat_sofascore(stats, 'Corner kicks')
 
-            # Exige estatísticas ativas para disparar alerta
             if finalizacoes == 0 and escanteios == 0:
                 continue
 
@@ -229,7 +217,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando com bandeiras das ligas...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando limpo...")
 
     while True:
         try:
@@ -245,5 +233,4 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Aviso no ciclo principal: {e}")
 
-        # Consulta a cada 4 minutos
         time.sleep(240)

@@ -13,8 +13,13 @@ CHAT_ID = '1865504705'
 
 jogos_notificados = set()
 
+# Cabeçalhos completos para evitar o erro 406 (Simula navegador real)
 headers_scraping = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache'
 }
 
 def obter_horario_brasil():
@@ -34,9 +39,6 @@ def enviar_alerta(mensagem):
         print(f"Erro ao enviar Telegram: {e}")
 
 def raspar_jogos_ao_vivo():
-    """
-    Extrai partidas ao vivo diretamente da web mantendo as 3 estratégias ativas.
-    """
     horario = obter_horario_brasil().strftime('%H:%M:%S')
     print(f"[{horario}] Farejando partidas ao vivo via Web Scraping...")
 
@@ -45,7 +47,7 @@ def raspar_jogos_ao_vivo():
     try:
         response = requests.get(url_live, headers=headers_scraping, timeout=15)
         if response.status_code != 200:
-            print(f"Aviso ao acessar o site: Status {response.status_code}")
+            print(f"[{horario}] Aviso ao acessar o site: Status {response.status_code}")
             return
         
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -62,7 +64,6 @@ def raspar_jogos_ao_vivo():
                 status_elem = match.find('span', class_='status')
                 status_texto = status_elem.text.strip() if status_elem else ''
 
-                # Filtra se o jogo está em andamento (presença de minutos ' ou indicadores de tempo)
                 if "'" not in status_texto and '1H' not in status_texto and '2H' not in status_texto:
                     continue
 
@@ -76,12 +77,11 @@ def raspar_jogos_ao_vivo():
                 gols_f = int(placar_fora) if placar_fora.isdigit() else 0
                 total_gols = gols_c + gols_f
 
-                # Identificação de 1º Tempo vs 2º Tempo
                 eh_primeiro_tempo = '1H' in status_texto or ("'" in status_texto and int(status_texto.replace("'", "")) <= 45 if status_texto.replace("'", "").isdigit() else True)
                 eh_segundo_tempo = '2H' in status_texto or ("'" in status_texto and int(status_texto.replace("'", "")) > 45 if status_texto.replace("'", "").isdigit() else False)
 
                 # ==============================================================
-                # 1. ESTRATÉGIA: OVER 0.5 HT (0x0 no 1º Tempo)
+                # 1. OVER 0.5 HT (0x0)
                 # ==============================================================
                 if total_gols == 0 and eh_primeiro_tempo:
                     mensagem = (
@@ -95,7 +95,7 @@ def raspar_jogos_ao_vivo():
                     jogos_notificados.add(match_id)
 
                 # ==============================================================
-                # 2. ESTRATÉGIA: OVER 1.5 HT (1x0 ou 0x1 no 1º Tempo)
+                # 2. OVER 1.5 HT (1x0 ou 0x1)
                 # ==============================================================
                 elif total_gols == 1 and eh_primeiro_tempo:
                     mensagem = (
@@ -109,7 +109,7 @@ def raspar_jogos_ao_vivo():
                     jogos_notificados.add(match_id)
 
                 # ==============================================================
-                # 3. ESTRATÉGIA: OVER LIMITE FT (2º Tempo | Diferença <= 1 gol)
+                # 3. OVER LIMITE FT (2º Tempo | Diferença <= 1 gol)
                 # ==============================================================
                 elif eh_segundo_tempo and abs(gols_c - gols_f) <= 1 and total_gols <= 4:
                     proximo_gol = total_gols + 0.5
@@ -153,5 +153,4 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Aviso no ciclo principal: {e}")
 
-        # Intervalo entre leituras (300 segundos = 5 minutos)
-        time.sleep(300)
+        time.sleep(120)

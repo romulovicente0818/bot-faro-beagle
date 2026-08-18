@@ -237,20 +237,21 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando com alertas independentes por mercado...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando (Horário: 08h às 00h)...")
 
     while True:
         try:
             agora_br = obter_horario_brasil()
             hora_atual = agora_br.hour
 
+            # Ajustado para operar entre 08:00 e 23:59 (desliga à 00:00)
             if 8 <= hora_atual < 24:
                 checar_jogos_ao_vivo()
             else:
                 horario_formatado = agora_br.strftime('%H:%M:%S')
-                print(f"[{horario_formatado}] Bot em repouso fora do horário (08h às 00h).")
+                print(f"[{horario_formatado}] Bot em repouso fora do horário estipulado (08h às 00h).")
 
         except Exception as e:
             print(f"Aviso no ciclo principal: {e}")
 
-        time.sleep(300)
+        time.sleep(240)

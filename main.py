@@ -8,7 +8,7 @@ import zoneinfo
 # ==============================================================================
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
-API_SPORTS_KEY = 'SUA_NOVA_CHAVE_AQUI'  # Substitua pela sua chave ativa da API-Sports
+API_SPORTS_KEY = 'bd887673e917db00d76a7cf80a4e508c'
 # ==============================================================================
 
 headers_api = {

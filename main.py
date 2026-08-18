@@ -10,7 +10,7 @@ TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 
 # Chave gerada via RapidAPI
-RAPIDAPI_KEY = '9b7d7f5f312027c13998f1bf28aa506f'
+RAPIDAPI_KEY = 'd5e99dd64a7f29976f19a0a0f80802ed'
 # ==============================================================================
 
 headers_api = {

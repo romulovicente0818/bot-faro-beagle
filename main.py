@@ -50,13 +50,13 @@ def checar_jogos_ao_vivo():
         print(f"Erro ao conectar na API: {e}")
         return
 
-    if not data.get('response'):
-        print(f"[{horario}] Nenhum jogo ao vivo retornado.")
+    jogos = data.get('response', [])
+    print(f"[{horario}] Total de jogos ao vivo na API: {len(jogos)}")
+    
+    if not jogos:
         return
 
-    print(f"[{horario}] Jogos ao vivo encontrados: {len(data['response'])}")
-
-    for item in data['response']:
+    for item in jogos:
         fixture_id = item['fixture']['id']
         tempo_minuto = item['fixture']['status']['elapsed']
         status = item['fixture']['status']['short']

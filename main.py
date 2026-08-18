@@ -212,7 +212,16 @@ def checar_jogos_ao_vivo():
 if __name__ == '__main__':
     while True:
         try:
-            checar_jogos_ao_vivo()
+            # Obtém a hora atual em formato 24h
+            hora_atual = int(time.strftime('%H'))
+
+            # Funciona apenas entre 08:00 e 19:59 (janela de 12 horas)
+            if 8 <= hora_atual <20:
+                checar_jogos_ao_vivo()
+            else:
+                horario_formatado = time.strftime('%H:%M:%S')
+                print(f[{horario_formatado}] Bot em repouso fora do horário estipulado (08h às 20h).")
+                
         except Exception as e:
             print(f"Aviso no ciclo principal: {e}")
-        time.sleep(480)
+        time.sleep(450)

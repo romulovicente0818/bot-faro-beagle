@@ -10,7 +10,7 @@ TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 
 # Insira aqui a sua API Key da API-Sports
-API_KEY = 'SUA_API_KEY_API_SPORTS_AQUI'
+API_KEY = '9b7d7f5f312027c13998f1bf28aa506f'
 # ==============================================================================
 
 headers_api = {
@@ -179,12 +179,6 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    msg_inicio = (
-        f"🐶⚽ *FARO DE BEAGLE (SISTEMA DE PRESSÃO APM ATIVO)*\n\n"
-        f"📡 Monitorando taxa de ataques perigosos por minuto na API-Sports.\n"
-        f"⏰ [{horario_inicio}]"
-    )
-    enviar_alerta(msg_inicio)
 
     while True:
         try:

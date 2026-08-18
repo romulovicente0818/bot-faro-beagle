@@ -9,12 +9,12 @@ import zoneinfo
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 
-# Sua chave gratuita da Football-Data.org inserida abaixo
-FOOTBALL_DATA_KEY = '4c9ad930407d4b95b283becaea48fa25'
+# Insira aqui a sua API Key da API-Sports
+API_KEY = 'SUA_API_KEY_API_SPORTS_AQUI'
 # ==============================================================================
 
 headers_api = {
-    'X-Auth-Token': FOOTBALL_DATA_KEY
+    'x-apisports-key': API_KEY
 }
 
 jogos_notificados = set()
@@ -35,92 +35,153 @@ def enviar_alerta(mensagem):
     except Exception as e:
         print(f"Erro ao enviar Telegram: {e}")
 
+def obter_estatisticas_fixture(fixture_id):
+    """Consulta os dados estatísticos da partida na API-Sports."""
+    url = f"https://v3.football.api-sports.io/fixtures/statistics?fixture={fixture_id}"
+    try:
+        response = requests.get(url, headers=headers_api, timeout=10)
+        data = response.json()
+        return data.get('response', [])
+    except Exception as e:
+        print(f"Erro ao buscar estatísticas do jogo {fixture_id}: {e}")
+        return []
+
+def extrair_stat(stats_list, stat_name):
+    """Soma as estatísticas de ambos os times (Casa + Fora)."""
+    total = 0
+    for team_stats in stats_list:
+        for item in team_stats.get('statistics', []):
+            if item.get('type') == stat_name and item.get('value') is not None:
+                val = item.get('value')
+                if isinstance(val, int):
+                    total += val
+                elif isinstance(val, str) and val.replace('%', '').isdigit():
+                    total += int(val.replace('%', ''))
+    return total
+
 def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario}] Checando partidas ao vivo via Football-Data.org...")
+    print(f"[{horario}] Checando partidas ao vivo via API-Sports (Métrica de Pressão)...")
 
-    url = "https://api.football-data.org/v4/matches?status=IN_PLAY"
+    url = "https://v3.football.api-sports.io/fixtures?live=all"
 
     try:
         response = requests.get(url, headers=headers_api, timeout=15)
-        
-        if response.status_code != 200:
-            print(f"[{horario}] Status HTTP retornado: {response.status_code}")
-            return
+        data = response.json()
+    except Exception as e:
+        print(f"Erro na requisição da API-Sports: {e}")
+        return
 
-        dados = response.json()
-        jogos = dados.get('matches', [])
-        print(f"[{horario}] Total de jogos ao vivo localizados: {len(jogos)}")
+    jogos = data.get('response', [])
+    print(f"[{horario}] Total de jogos ao vivo localizados: {len(jogos)}")
 
-        for item in jogos:
-            match_id = item.get('id')
-            if match_id in jogos_notificados:
+    if not jogos:
+        return
+
+    for item in jogos:
+        fixture = item.get('fixture', {})
+        fixture_id = fixture.get('id')
+        status_short = fixture.get('status', {}).get('short')
+        elapsed = fixture.get('status', {}).get('elapsed') or 0
+
+        goals = item.get('goals', {})
+        gols_c = goals.get('home') if goals.get('home') is not None else 0
+        gols_f = goals.get('away') if goals.get('away') is not None else 0
+        total_gols = gols_c + gols_f
+
+        teams = item.get('teams', {})
+        time_casa = teams.get('home', {}).get('name', 'Casa')
+        time_fora = teams.get('away', {}).get('name', 'Fora')
+
+        league = item.get('league', {})
+        nome_liga = league.get('name', '')
+        pais_liga = league.get('country', '')
+
+        if fixture_id in jogos_notificados or elapsed == 0:
+            continue
+
+        if status_short not in ['1H', '2H']:
+            continue
+
+        # ======================================================================
+        # CÁLCULO DE PRESSÃO E ATAQUES POR MINUTO (APM)
+        # ======================================================================
+        if total_gols <= 3:
+            stats = obter_estatisticas_fixture(fixture_id)
+            if not stats:
                 continue
 
-            time_casa = item.get('homeTeam', {}).get('name', 'Casa')
-            time_fora = item.get('awayTeam', {}).get('name', 'Fora')
-            nome_liga = item.get('competition', {}).get('name', 'Liga')
+            atq_perigosos = extrair_stat(stats, "Dangerous Attacks")
+            chutes_gol = extrair_stat(stats, "Shots on Goal")
+            chutes_fora = extrair_stat(stats, "Shots off Goal")
+            finalizacoes_totais = chutes_gol + chutes_fora
+            escanteios = extrair_stat(stats, "Corner Kicks")
 
-            full_time = item.get('score', {}).get('fullTime', {})
-            gols_c = full_time.get('home', 0) if full_time.get('home') is not None else 0
-            gols_f = full_time.get('away', 0) if full_time.get('away') is not None else 0
-            total_gols = gols_c + gols_f
+            # Métrica de Pressão: Ataques Perigosos por Minuto (APM)
+            apm = round(atq_perigosos / elapsed, 2)
 
-            half_time = item.get('score', {}).get('halfTime', {})
-            tem_placar_ht = half_time.get('home') is not None
-            
-            eh_primeiro_tempo = not tem_placar_ht
-            eh_segundo_tempo = tem_placar_ht
+            # --- ESTRATÉGIA 1: OVER 0.5 HT (0x0 + Alta Pressão APM >= 1.0) ---
+            if total_gols == 0 and status_short == '1H' and elapsed >= 15:
+                if apm >= 1.0 and finalizacoes_totais >= 3:
+                    mensagem = (
+                        f"🚨 *FARO DE BEAGLE: ALTA PRESSÃO HT (OVER 0.5)* 🚨\n\n"
+                        f"🏆 *Liga:* {pais_liga} - {nome_liga}\n"
+                        f"⚽ *{time_casa} 0 x 0 {time_fora}*\n"
+                        f"⏱️ Tempo: *{elapsed}' min (1º Tempo)*\n\n"
+                        f"🔥 *Índice de Pressão (APM):* `{apm}` atq/min\n"
+                        f"📊 *Estatísticas da Partida:*\n"
+                        f"⚡ *Ataques Perigosos:* `{atq_perigosos}`\n"
+                        f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
+                        f"👞 *Finalizações Totais:* `{finalizacoes_totais}`\n"
+                        f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                        f"💡 *Ação:* Jogo com alta intensidade. Confira o **Over 0.5 HT**!"
+                    )
+                    enviar_alerta(mensagem)
+                    jogos_notificados.add(fixture_id)
 
-            # 1. ESTRATÉGIA: OVER 0.5 HT (Placar 0x0 no 1º Tempo)
-            if total_gols == 0 and eh_primeiro_tempo:
-                mensagem = (
-                    f"🚨 *RADAR FOOTBALL-DATA: OVER 0.5 HT (0x0)* 🚨\n\n"
-                    f"🏆 *Liga:* {nome_liga}\n"
-                    f"⚽ *{time_casa} 0 x 0 {time_fora}*\n"
-                    f"⏱️ Status: *1º Tempo em andamento*\n\n"
-                    f"🔥 *Jogo em andamento no 1º Tempo!*\n"
-                    f"💡 Confira a cotação do **Over 0.5 HT** na sua casa de apostas."
-                )
-                enviar_alerta(mensagem)
-                jogos_notificados.add(match_id)
+            # --- ESTRATÉGIA 2: OVER 1.5 HT (1x0 ou 0x1 + Pressão Sustentada APM >= 0.9) ---
+            elif total_gols == 1 and status_short == '1H' and elapsed >= 20:
+                if apm >= 0.9 and finalizacoes_totais >= 4:
+                    mensagem = (
+                        f"⚡ *FARO DE BEAGLE: PRESSÃO PARA 2º GOL (OVER 1.5 HT)* ⚡\n\n"
+                        f"🏆 *Liga:* {pais_liga} - {nome_liga}\n"
+                        f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
+                        f"⏱️ Tempo: *{elapsed}' min (1º Tempo)*\n\n"
+                        f"🔥 *Índice de Pressão (APM):* `{apm}` atq/min\n"
+                        f"📊 *Estatísticas da Partida:*\n"
+                        f"⚡ *Ataques Perigosos:* `{atq_perigosos}`\n"
+                        f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
+                        f"👞 *Finalizações Totais:* `{finalizacoes_totais}`\n\n"
+                        f"💡 *Ação:* Ritmo acelerado. Confira a linha de **Over 1.5 HT**!"
+                    )
+                    enviar_alerta(mensagem)
+                    jogos_notificados.add(fixture_id)
 
-            # 2. ESTRATÉGIA: OVER 1.5 HT (1x0 ou 0x1 no 1º Tempo)
-            elif total_gols == 1 and eh_primeiro_tempo:
-                mensagem = (
-                    f"⚡ *RADAR FOOTBALL-DATA: OVER 1.5 HT (2º GOL)* ⚡\n\n"
-                    f"🏆 *Liga:* {nome_liga}\n"
-                    f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
-                    f"⏱️ Status: *1º Tempo em andamento*\n\n"
-                    f"🔥 *Primeiro gol marcado cedo!*\n"
-                    f"💡 Confira a linha de **Over 1.5 HT** para buscar o próximo gol."
-                )
-                enviar_alerta(mensagem)
-                jogos_notificados.add(match_id)
-
-            # 3. ESTRATÉGIA: OVER LIMITE FT (2º Tempo | Diferença <= 1 gol)
-            elif eh_segundo_tempo and abs(gols_c - gols_f) <= 1 and total_gols <= 4:
-                proximo_gol = total_gols + 0.5
-                mensagem = (
-                    f"🎯 *RADAR FOOTBALL-DATA: OVER LIMITE FT (+{proximo_gol})* 🎯\n\n"
-                    f"🏆 *Liga:* {nome_liga}\n"
-                    f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
-                    f"⏱️ Status: *2º Tempo em andamento*\n\n"
-                    f"🔥 *Placar parelho na reta final!*\n"
-                    f"💡 Confira a linha de **Over Limite (+{proximo_gol} Gols)**."
-                )
-                enviar_alerta(mensagem)
-                jogos_notificados.add(match_id)
-
-    except Exception as e:
-        print(f"Erro ao consultar Football-Data.org: {e}")
+            # --- ESTRATÉGIA 3: OVER LIMITE FT (2º Tempo | Diferença <= 1 gol + APM >= 1.1) ---
+            elif status_short == '2H' and elapsed >= 65 and abs(gols_c - gols_f) <= 1:
+                if apm >= 1.1 and finalizacoes_totais >= 7:
+                    proximo_gol = total_gols + 0.5
+                    mensagem = (
+                        f"🎯 *FARO DE BEAGLE: PRESSÃO RETA FINAL (OVER +{proximo_gol})* 🎯\n\n"
+                        f"🏆 *Liga:* {pais_liga} - {nome_liga}\n"
+                        f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
+                        f"⏱️ Tempo: *{elapsed}' min (2º Tempo)*\n\n"
+                        f"🔥 *Índice de Pressão (APM):* `{apm}` atq/min\n"
+                        f"📊 *Estatísticas da Partida:*\n"
+                        f"⚡ *Ataques Perigosos:* `{atq_perigosos}`\n"
+                        f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
+                        f"👞 *Finalizações Totais:* `{finalizacoes_totais}`\n"
+                        f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                        f"💡 *Ação:* Sufoco na reta final! Confira o **Over Limite (+{proximo_gol})**!"
+                    )
+                    enviar_alerta(mensagem)
+                    jogos_notificados.add(fixture_id)
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
     msg_inicio = (
-        f"🐶⚽ *FARO DE BEAGLE ATIVO (FOOTBALL-DATA)*\n\n"
-        f"🌐 Conectado à API da Football-Data.org sem bloqueios de IP!\n"
-        f"📋 *Estratégias:* Over 0.5 HT, Over 1.5 HT e Over Limite FT.\n"
+        f"🐶⚽ *FARO DE BEAGLE (SISTEMA DE PRESSÃO APM ATIVO)*\n\n"
+        f"📡 Monitorando taxa de ataques perigosos por minuto na API-Sports.\n"
         f"⏰ [{horario_inicio}]"
     )
     enviar_alerta(msg_inicio)
@@ -134,10 +195,10 @@ if __name__ == '__main__':
                 checar_jogos_ao_vivo()
             else:
                 horario_formatado = agora_br.strftime('%H:%M:%S')
-                print(f"[{horario_formatado}] Bot em repouso fora do horário (08h às 20h).")
+                print(f"[{horario_formatado}] Bot em repouso fora do horário estipulado (08h às 20h).")
 
         except Exception as e:
             print(f"Aviso no ciclo principal: {e}")
 
-        # Consulta a cada 3 minutos
-        time.sleep(180)
+        # Intervalo: 450 segundos = 7,5 minutos
+        time.sleep(450)

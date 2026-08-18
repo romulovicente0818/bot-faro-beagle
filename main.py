@@ -10,10 +10,16 @@ TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
+    # Categoria de Base
     'u17', 'u18', 'u19', 'u20', 'u21', 'u23', 
     'sub-17', 'sub-19', 'sub-20', 'sub-21', 'sub-23', 
     'sub17', 'sub19', 'sub20', 'sub21', 'sub23',
-    'women', 'feminino', 'femeni', 'women\'s', 'youth', 'juniors', 'reserve'
+    'youth', 'juniors', 'reserve', 'reserves',
+    # Feminino
+    'women', 'feminino', 'femeni', 'women\'s',
+    # Campeonatos Amadores
+    'amateur', 'amador', 'regionaliga', 'oberliga', 
+    'landesliga', 'district', 'county', 'regional league', 'non-league'
 ]
 # ==============================================================================
 
@@ -53,6 +59,38 @@ def obter_estatisticas_sofascore(event_id):
         pass
     return []
 
+def obter_odds_sofascore(event_id):
+    """Consulta cotações ao vivo disponíveis no Sofascore."""
+    url = f"https://api.sofascore.com/api/v1/event/{event_id}/odds/1/all"
+    try:
+        res = scraper.get(url, timeout=10)
+        if res.status_code == 200:
+            markets = res.json().get('markets', [])
+            texto_odds = []
+            
+            for m in markets:
+                choices = m.get('choices', [])
+                for choice in choices:
+                    name = choice.get('name', '')
+                    fractional = choice.get('fractionalValue', '')
+                    
+                    # Converte odds fracionárias ou decimais
+                    odd_val = None
+                    if choice.get('initialOdd'):
+                        odd_val = choice.get('initialOdd') / 100
+                    if choice.get('currentOdd'):
+                        odd_val = choice.get('currentOdd') / 100
+                        
+                    if odd_val and odd_val > 1.0:
+                        texto_odds.append(f"• *{name}:* `{odd_val:.2f}`")
+                        
+            if texto_odds:
+                # Retorna até 4 cotações de destaque
+                return "\n💵 *Odds no Momento:*\n" + "\n".join(texto_odds[:4])
+    except Exception:
+        pass
+    return "\n💵 *Odds:* `Não disponíveis no ao vivo`"
+
 def extrair_stat_sofascore(stats_data, item_name):
     if not stats_data:
         return 0
@@ -76,6 +114,28 @@ def eh_liga_valida(nome_liga):
         if termo in nome_lower:
             return False
     return True
+
+def extrair_minuto_jogo(item):
+    """Extrai os minutos decorridos do jogo."""
+    status_desc = item.get('status', {}).get('description', '')
+    
+    # Extração por tempo decorrido
+    time_data = item.get('time', {})
+    if isinstance(time_data, dict) and time_data.get('played'):
+        minuto = time_data.get('played') // 60
+        return f"{minuto}' min"
+
+    if "'" in status_desc:
+        return status_desc.strip()
+    
+    time_status = item.get('status', {}).get('type', '')
+    if time_status == 'inprogress':
+        if '1st' in status_desc.lower():
+            return "1º Tempo"
+        elif '2nd' in status_desc.lower():
+            return "2º Tempo"
+
+    return status_desc or "Em andamento"
 
 def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
@@ -103,7 +163,6 @@ def checar_jogos_ao_vivo():
             if not eh_liga_valida(nome_liga):
                 continue
 
-            # Extração do País para formar 'País - Nome da Liga'
             category = item.get('tournament', {}).get('category', {})
             nome_pais = category.get('name', '')
 
@@ -114,6 +173,9 @@ def checar_jogos_ao_vivo():
 
             status_desc = item.get('status', {}).get('description', '')
             time_status = item.get('status', {}).get('type', '')
+            
+            # Minutagem exata no momento do envio
+            minutagem = extrair_minuto_jogo(item)
 
             time_casa = item.get('homeTeam', {}).get('name', 'Casa')
             time_fora = item.get('awayTeam', {}).get('name', 'Fora')
@@ -138,6 +200,9 @@ def checar_jogos_ao_vivo():
             if finalizacoes == 0 and escanteios == 0:
                 continue
 
+            # Busca odds da partida
+            bloco_odds = obter_odds_sofascore(event_id)
+
             # Estratégia 1: Over 0.5 HT (0x0)
             if total_gols == 0 and eh_1h:
                 if finalizacoes >= 3 or escanteios >= 2:
@@ -145,11 +210,12 @@ def checar_jogos_ao_vivo():
                         f"🚨 *FARO DE BEAGLE: OVER 0.5 HT (0x0)* 🚨\n\n"
                         f"🏆 *Liga:* {liga_formatada}\n"
                         f"⚽ *{time_casa} 0 x 0 {time_fora}*\n"
-                        f"⏱️ Status: *1º Tempo em andamento*\n\n"
+                        f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
                         f"📊 *Estatísticas em Tempo Real:*\n"
                         f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
                         f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
-                        f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                        f"🚩 *Escanteios:* `{escanteios}`\n"
+                        f"{bloco_odds}\n\n"
                         f"💡 Confira a linha de **Over 0.5 HT**!"
                     )
                     enviar_alerta(mensagem)
@@ -162,10 +228,11 @@ def checar_jogos_ao_vivo():
                         f"⚡ *FARO DE BEAGLE: OVER 1.5 HT (2º GOL)* ⚡\n\n"
                         f"🏆 *Liga:* {liga_formatada}\n"
                         f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
-                        f"⏱️ Status: *1º Tempo em andamento*\n\n"
+                        f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
                         f"📊 *Estatísticas em Tempo Real:*\n"
                         f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
-                        f"👞 *Finalizações Totais:* `{finalizacoes}`\n\n"
+                        f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
+                        f"{bloco_odds}\n\n"
                         f"💡 Confira a linha de **Over 1.5 HT**!"
                     )
                     enviar_alerta(mensagem)
@@ -179,11 +246,12 @@ def checar_jogos_ao_vivo():
                         f"🎯 *FARO DE BEAGLE: OVER LIMITE FT (+{proximo_gol})* 🎯\n\n"
                         f"🏆 *Liga:* {liga_formatada}\n"
                         f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
-                        f"⏱️ Status: *2º Tempo em andamento*\n\n"
+                        f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
                         f"📊 *Estatísticas em Tempo Real:*\n"
                         f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
                         f"👞 *Finalizações Totais:* `{finalizacoes}`\n"
-                        f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                        f"🚩 *Escanteios:* `{escanteios}`\n"
+                        f"{bloco_odds}\n\n"
                         f"💡 Confira a linha de **Over Limite (+{proximo_gol})**!"
                     )
                     enviar_alerta(mensagem)
@@ -194,7 +262,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando com minutagem e odds...")
 
     while True:
         try:

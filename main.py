@@ -1,12 +1,14 @@
 import time
 import requests
+from datetime import datetime
+import zoneinfo
 
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
 TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
-API_SPORTS_KEY = 'bd887673e917db00d76a7cf80a4e508c'
+API_SPORTS_KEY = 'SUA_NOVA_CHAVE_AQUI'  # Substitua pela sua chave ativa da API-Sports
 # ==============================================================================
 
 headers_api = {
@@ -14,6 +16,10 @@ headers_api = {
 }
 
 jogos_notificados = set()
+
+def obter_horario_brasil():
+    fuso_br = zoneinfo.ZoneInfo('America/Sao_Paulo')
+    return datetime.now(fuso_br)
 
 def enviar_alerta(mensagem):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -39,7 +45,7 @@ def extrair_valor_stat(lista_stats, nome_stat):
     return 0
 
 def checar_jogos_ao_vivo():
-    horario = time.strftime('%H:%M:%S')
+    horario = obter_horario_brasil().strftime('%H:%M:%S')
     print(f"[{horario}] Checando jogos ao vivo na API...")
     url = "https://v3.football.api-sports.io/fixtures?live=all"
     
@@ -191,7 +197,6 @@ def checar_jogos_ao_vivo():
                     finalizacoes = chutes_gol + chutes_fora + chutes_bloq
                     escanteios = extrair_valor_stat(stats_casa, 'Corner Kicks') + extrair_valor_stat(stats_fora, 'Corner Kicks')
 
-                    # Filtro para 2º tempo: Pressão alta acumulada
                     if appm >= 1.0 and finalizacoes >= 8 and chutes_gol >= 3 and (posse_casa >= 55 or posse_fora >= 55):
                         proximo_gol = total_gols + 0.5
                         mensagem = (
@@ -212,16 +217,18 @@ def checar_jogos_ao_vivo():
 if __name__ == '__main__':
     while True:
         try:
-            # Obtém a hora atual em formato 24h
-            hora_atual = int(time.strftime('%H'))
+            agora_br = obter_horario_brasil()
+            hora_atual = agora_br.hour
 
-            # Funciona apenas entre 08:00 e 19:59 (janela de 12 horas)
-            if 8 <= hora_atual <20:
+            # Funciona apenas entre 08:00 e 19:59 (Horário de Brasília)
+            if 8 <= hora_atual < 20:
                 checar_jogos_ao_vivo()
             else:
-                horario_formatado = time.strftime('%H:%M:%S')
-                print(f[{horario_formatado}] Bot em repouso fora do horário estipulado (08h às 20h).")
-                
+                horario_formatado = agora_br.strftime('%H:%M:%S')
+                print(f"[{horario_formatado}] Bot em repouso fora do horário estipulado (08h às 20h).")
+
         except Exception as e:
             print(f"Aviso no ciclo principal: {e}")
+
+        # Intervalo: 450 segundos = 7,5 minutos
         time.sleep(450)

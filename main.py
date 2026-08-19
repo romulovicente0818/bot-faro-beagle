@@ -1750,4 +1750,4 @@ if __name__ == '__main__':
                 f"Aviso no ciclo principal: {e}"
             )
 
-        time.sleep(240)
+        time.sleep(120)

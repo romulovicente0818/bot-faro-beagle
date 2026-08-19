@@ -151,7 +151,15 @@ def eh_partida_valida(nome_liga, time_casa, time_fora):
     return True
 
 def extrair_minutagem_e_numero(item, eh_1h, eh_2h):
-    status_desc = str(item.get('status', {}).get('description', '')).strip()
+    status_desc = str(item.get('status', {}).get('description', '')).lower().strip()
+    status_type = str(item.get('status', {}).get('type', '')).lower().strip()
+
+    # BLOQUEIO RIGIDO DE PRORROGAÇÃO E PÊNALTIS
+    termos_prorrogacao = ['extra', 'et', 'extratime', 'overtime', 'penalties', 'pen', 'prorrogação']
+    for termo in termos_prorrogacao:
+        if termo in status_desc or termo in status_type:
+            return None, None
+
     minuto = None
 
     if "'" in status_desc:
@@ -167,12 +175,15 @@ def extrair_minutagem_e_numero(item, eh_1h, eh_2h):
             m_calc = (now_ts - start_ts) // 60
             if eh_2h:
                 m_calc += 45
-            if 1 <= m_calc <= 120:
+            if 1 <= m_calc <= 90:
                 minuto = m_calc
 
+    # Valida apenas minutos dentro do tempo regulamentar HT (1-45) e FT (45-90)
     if minuto:
-        tempo_rotulo = "1º tempo" if eh_1h else "2º tempo"
-        return f"{minuto}' do {tempo_rotulo}", minuto
+        if eh_1h and minuto <= 45:
+            return f"{minuto}' do 1º tempo", minuto
+        elif eh_2h and 45 <= minuto <= 90:
+            return f"{minuto}' do 2º tempo", minuto
 
     return None, None
 
@@ -200,7 +211,7 @@ def validar_alertas_enviados(jogos_dict):
 
         eh_intervalo = 'halftime' in status_desc or 'ht' in status_desc or time_status == 'halftime'
         eh_2h = '2nd' in status_desc or time_status == '2nd'
-        eh_finalizado = time_status == 'finished' or 'ended' in status_desc or 'ft' in status_desc
+        eh_finalizado = time_status == 'finished' or 'ended' in status_desc or 'ft' in status_desc or 'extra' in status_desc
 
         if gols_atuais > gols_no_alerta:
             nova_mensagem = f"{msg_original}\n\n✅️✅️✅️"
@@ -260,15 +271,19 @@ def checar_jogos_ao_vivo():
             else:
                 liga_formatada = nome_liga
 
-            status_desc = item.get('status', {}).get('description', '')
-            time_status = item.get('status', {}).get('type', '')
+            status_desc = str(item.get('status', {}).get('description', '')).lower()
+            time_status = str(item.get('status', {}).get('type', '')).lower()
+
+            # Descarta se estiver em prorrogação ou disputa de pênaltis
+            if any(term in status_desc or term in time_status for term in ['extra', 'et', 'extratime', 'overtime', 'penalties']):
+                continue
 
             gols_c = item.get('homeScore', {}).get('current', 0)
             gols_f = item.get('awayScore', {}).get('current', 0)
             total_gols = gols_c + gols_f
 
-            eh_1h = time_status == 'inprogress' and '1st' in status_desc.lower()
-            eh_2h = time_status == 'inprogress' and '2nd' in status_desc.lower()
+            eh_1h = time_status == 'inprogress' and '1st' in status_desc
+            eh_2h = time_status == 'inprogress' and '2nd' in status_desc
 
             if not (eh_1h or eh_2h):
                 continue
@@ -304,7 +319,7 @@ def checar_jogos_ao_vivo():
             bloco_estatisticas = (
                 f"{linha_xg}"
                 f"{linha_fluxo}"
-                f"👞 *Finalizações Totais:* `{fin_tot}` _({fin_h_int}x{fin_a_int})_\n"
+                f"shirt *Finalizações Totais:* `{fin_tot}` _({fin_h_int}x{fin_a_int})_\n"
                 f"🎯 *Chutes no Gol:* `{chutes_gol}` _({cg_h_int}x{cg_a_int})_\n"
                 f"🚩 *Escanteios:* `{escanteios}` _({esc_h_int}x{esc_a_int})_\n"
                 f"{linha_prelive}"
@@ -394,7 +409,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando com marcacao de GREEN (✅️✅️✅️) e RED (❌️❌️❌️)...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando restrito a HT/FT (sem prorrogação)...")
 
     while True:
         try:

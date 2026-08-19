@@ -1,50 +1,104 @@
+import os
 import time
 import cloudscraper
 from datetime import datetime
 import zoneinfo
-import os
 
 # ==============================================================================
-# CONFIGURAÇÕES
+# FARO DE BEAGLE
+# BOT DE ANÁLISE DE GOLS - SOFASCORE + TELEGRAM
+#
+# Mercados:
+#   1) Over 0.5 HT
+#   2) Over 1.5 HT
+#   3) Gol Limite FT
+#
+# Estrutura:
+#   SofaScore -> análise ao vivo -> pontuação -> Telegram -> validação GREEN/RED
 # ==============================================================================
 
-# IMPORTANTE:
-# Gere um NOVO token no BotFather, pois o token anterior foi exposto.
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4)
-CHAT_ID = os.getenv("CHAT_ID", "1865504705")
 
-# Intervalo padrão entre consultas.
-# A estrutura de utilização continua igual: basta executar este arquivo.
-INTERVALO_NORMAL = 120
-INTERVALO_ALERTA = 60
+# ==============================================================================
+# CONFIGURAÇÕES E CREDENCIAIS
+# ==============================================================================
 
-# Score mínimo para gerar alerta
-SCORE_ALERTA_FORTE = 75
+TELEGRAM_TOKEN = os.getenv("8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4")
+CHAT_ID = os.getenv("1865504705")
 
-# Score mínimo para sinal premium
-SCORE_PREMIUM = 85
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN não configurado no Railway.")
+
+if not CHAT_ID:
+    raise RuntimeError("CHAT_ID não configurado no Railway.")
+
+
+# ==============================================================================
+# CONFIGURAÇÕES DO BOT
+# ==============================================================================
+
+INTERVALO_CONSULTA = 240  # 4 minutos
+
+HORA_INICIO = 8
+HORA_FIM = 24
+
+
+# ==============================================================================
+# FILTROS DE PARTIDAS
+# ==============================================================================
 
 TERMOS_IGNORADOS = [
-    # Categorias de Base
-    'u15', 'u16', 'u17', 'u18', 'u19', 'u20', 'u21', 'u22', 'u23',
-    'sub-15', 'sub-16', 'sub-17', 'sub-18', 'sub-19', 'sub-20',
-    'sub-21', 'sub-22', 'sub-23',
-    'sub15', 'sub16', 'sub17', 'sub18', 'sub19', 'sub20',
-    'sub21', 'sub22', 'sub23',
-    ' youth', 'youth ', 'juniors', 'junior',
-    'reserve', 'reserves', 'academy',
-    'proliga', 'liga pro', 'cup u', 'league u',
-    'trophy u', 'championship u',
+
+    # Categorias de base
+    'u15', 'u16', 'u17', 'u18', 'u19', 'u20',
+    'u21', 'u22', 'u23',
+
+    'sub-15', 'sub-16', 'sub-17', 'sub-18',
+    'sub-19', 'sub-20', 'sub-21', 'sub-22', 'sub-23',
+
+    'sub15', 'sub16', 'sub17', 'sub18',
+    'sub19', 'sub20', 'sub21', 'sub22', 'sub23',
+
+    ' youth',
+    'youth ',
+    'juniors',
+    'junior',
+    'reserve',
+    'reserves',
+    'academy',
+
+    'proliga',
+    'liga pro',
+    'cup u',
+    'league u',
+    'trophy u',
+    'championship u',
 
     # Feminino
-    'women', 'feminino', 'femeni', 'women\'s', 'female', ' w ',
+    'women',
+    'feminino',
+    'femeni',
+    "women's",
+    'female',
+    ' w ',
 
-    # Ligas menores
-    'amateur', 'amador', 'regionaliga', 'oberliga', 'landesliga',
-    'district', 'county', 'regional league', 'non-league',
-    'primera c', 'primera d', 'tercera'
+    # Ligas menores / amadoras
+    'amateur',
+    'amador',
+    'regionaliga',
+    'oberliga',
+    'landesliga',
+    'district',
+    'county',
+    'regional league',
+    'non-league',
+    'primera c',
+    'primera d',
+    'tercera'
 ]
 
+
+# ==============================================================================
+# SCRAPER
 # ==============================================================================
 
 scraper = cloudscraper.create_scraper(
@@ -55,16 +109,18 @@ scraper = cloudscraper.create_scraper(
     }
 )
 
-# Evita alertas duplicados
+
+# ==============================================================================
+# CONTROLE DE ALERTAS
+# ==============================================================================
+
 notificados_05_ht = set()
 notificados_15_ht = set()
 notificados_limite_ft = set()
 
-# Alertas aguardando validação
-alertas_pendentes = {}
 
-# Cache simples para evitar excesso de consultas
-cache_dados = {}
+# Alertas enviados que ainda precisam ser validados
+alertas_pendentes = {}
 
 
 # ==============================================================================
@@ -81,6 +137,7 @@ def obter_horario_brasil():
 # ==============================================================================
 
 def enviar_alerta(mensagem):
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     payload = {
@@ -90,19 +147,38 @@ def enviar_alerta(mensagem):
     }
 
     try:
-        res = scraper.post(url, json=payload, timeout=10)
+
+        res = scraper.post(
+            url,
+            json=payload,
+            timeout=10
+        )
 
         if res.status_code == 200:
+
             dados = res.json()
-            return dados.get('result', {}).get('message_id')
+
+            return dados.get(
+                'result',
+                {}
+            ).get(
+                'message_id'
+            )
+
+        print(
+            f"Telegram retornou status {res.status_code}: "
+            f"{res.text[:200]}"
+        )
 
     except Exception as e:
+
         print(f"Erro ao enviar Telegram: {e}")
 
     return None
 
 
 def editar_alerta(message_id, nova_mensagem):
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
 
     payload = {
@@ -113,250 +189,388 @@ def editar_alerta(message_id, nova_mensagem):
     }
 
     try:
-        scraper.post(url, json=payload, timeout=10)
+
+        res = scraper.post(
+            url,
+            json=payload,
+            timeout=10
+        )
+
+        if res.status_code != 200:
+
+            print(
+                f"Erro ao editar Telegram: "
+                f"{res.status_code} - {res.text[:200]}"
+            )
 
     except Exception as e:
+
         print(f"Erro ao editar mensagem Telegram: {e}")
 
 
 # ==============================================================================
-# SOFASCORE
+# SOFASCORE - ESTATÍSTICAS
 # ==============================================================================
 
 def obter_estatisticas_sofascore(event_id):
 
-    url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
+    url = (
+        f"https://www.sofascore.com/api/v1/"
+        f"event/{event_id}/statistics"
+    )
 
     try:
-        res = scraper.get(url, timeout=10)
+
+        res = scraper.get(
+            url,
+            timeout=10
+        )
 
         if res.status_code == 200:
-            return res.json().get('statistics', [])
 
-    except Exception:
-        pass
+            return res.json().get(
+                'statistics',
+                []
+            )
+
+    except Exception as e:
+
+        print(
+            f"Erro nas estatísticas {event_id}: {e}"
+        )
 
     return []
 
 
-def obter_prelive_sofascore(event_id):
-
-    url = f"https://api.sofascore.com/api/v1/event/{event_id}/prematch-form"
-
-    try:
-        res = scraper.get(url, timeout=10)
-
-        if res.status_code == 200:
-            return res.json()
-
-    except Exception:
-        pass
-
-    return None
-
+# ==============================================================================
+# SOFASCORE - GRÁFICO DE PRESSÃO
+# ==============================================================================
 
 def obter_pressao_grafico_sofascore(event_id):
 
-    url = f"https://api.sofascore.com/api/v1/event/{event_id}/graph"
+    url = (
+        f"https://www.sofascore.com/api/v1/"
+        f"event/{event_id}/graph"
+    )
 
     try:
-        res = scraper.get(url, timeout=10)
 
-        if res.status_code == 200:
+        res = scraper.get(
+            url,
+            timeout=10
+        )
 
-            points = res.json().get('graphPoints', [])
+        if res.status_code != 200:
+            return 0, 0, ""
 
-            if not points:
-                return {
-                    'pico': 0,
-                    'media': 0,
-                    'casa': 0,
-                    'fora': 0,
-                    'tendencia': 'NEUTRA',
-                    'aceleracao': 0
-                }
+        points = res.json().get(
+            'graphPoints',
+            []
+        )
 
-            pontos = points[-12:]
+        if not points:
+            return 0, 0, ""
 
-            valores_casa = []
-            valores_fora = []
+        ultimos_pontos = (
+            points[-10:]
+            if len(points) >= 10
+            else points
+        )
 
-            for p in pontos:
+        valores = []
 
-                valor = p.get('value', 0)
+        for ponto in ultimos_pontos:
 
-                try:
-                    valor = float(valor)
-                except Exception:
-                    valor = 0
+            try:
 
-                # IMPORTANTE:
-                # Não usamos abs().
-                # O sinal identifica qual equipe está pressionando.
-                if valor >= 0:
-                    valores_casa.append(valor)
-                    valores_fora.append(0)
-                else:
-                    valores_casa.append(0)
-                    valores_fora.append(abs(valor))
+                valor = float(
+                    ponto.get(
+                        'value',
+                        0
+                    )
+                )
 
-            media_casa = sum(valores_casa) / len(valores_casa)
-            media_fora = sum(valores_fora) / len(valores_fora)
+                valores.append(
+                    abs(valor)
+                )
 
-            pico = max(
-                max(valores_casa),
-                max(valores_fora)
-            )
+            except Exception:
+                pass
 
-            # Últimos pontos para identificar aceleração
-            metade = max(1, len(pontos) // 2)
+        if not valores:
+            return 0, 0, ""
 
-            primeira_casa = sum(valores_casa[:metade]) / max(1, len(valores_casa[:metade]))
-            segunda_casa = sum(valores_casa[metade:]) / max(1, len(valores_casa[metade:]))
+        pico = max(valores)
 
-            primeira_fora = sum(valores_fora[:metade]) / max(1, len(valores_fora[:metade]))
-            segunda_fora = sum(valores_fora[metade:]) / max(1, len(valores_fora[metade:]))
+        media = sum(valores) / len(valores)
 
-            aceleracao_casa = segunda_casa - primeira_casa
-            aceleracao_fora = segunda_fora - primeira_fora
+        texto = (
+            f"🔥 *Pressão:* "
+            f"Pico `{pico:.0f}` | "
+            f"Média `{media:.1f}`\n"
+        )
 
-            if media_casa > media_fora * 1.25:
-                tendencia = 'CASA'
-
-            elif media_fora > media_casa * 1.25:
-                tendencia = 'FORA'
-
-            else:
-                tendencia = 'EQUILIBRADA'
-
-            aceleracao = max(
-                aceleracao_casa,
-                aceleracao_fora
-            )
-
-            return {
-                'pico': round(pico, 1),
-                'media': round(max(media_casa, media_fora), 1),
-                'casa': round(media_casa, 1),
-                'fora': round(media_fora, 1),
-                'tendencia': tendencia,
-                'aceleracao': round(aceleracao, 1)
-            }
+        return pico, media, texto
 
     except Exception:
         pass
 
-    return {
-        'pico': 0,
-        'media': 0,
-        'casa': 0,
-        'fora': 0,
-        'tendencia': 'NEUTRA',
-        'aceleracao': 0
-    }
+    return 0, 0, ""
 
 
 # ==============================================================================
 # EXTRAÇÃO DE ESTATÍSTICAS
 # ==============================================================================
 
-def encontrar_periodo(stats_data, periodo):
+def extrair_stat_sofascore(
+    stats_data,
+    item_names
+):
 
     if not stats_data:
-        return None
-
-    for bloco in stats_data:
-
-        if bloco.get('period') == periodo:
-            return bloco
-
-    return None
-
-
-def extrair_stat_periodo(stats_data, item_name, periodo='ALL'):
-
-    bloco = encontrar_periodo(stats_data, periodo)
-
-    if not bloco:
         return 0, 0, 0
 
-    for group in bloco.get('groups', []):
+    if isinstance(item_names, str):
+        item_names = [item_names]
 
-        for item in group.get('statisticsItems', []):
+    for period in stats_data:
 
-            if item.get('name') == item_name:
+        if period.get('period') != 'ALL':
+            continue
 
-                home_raw = str(item.get('home', '0')).replace('%', '')
-                away_raw = str(item.get('away', '0')).replace('%', '')
+        for group in period.get(
+            'groups',
+            []
+        ):
+
+            for item in group.get(
+                'statisticsItems',
+                []
+            ):
+
+                nome = item.get(
+                    'name',
+                    ''
+                )
+
+                if nome not in item_names:
+                    continue
+
+                home_raw = str(
+                    item.get(
+                        'home',
+                        '0'
+                    )
+                ).replace(
+                    '%',
+                    ''
+                )
+
+                away_raw = str(
+                    item.get(
+                        'away',
+                        '0'
+                    )
+                ).replace(
+                    '%',
+                    ''
+                )
 
                 try:
 
-                    home = float(home_raw)
-                    away = float(away_raw)
+                    home = float(
+                        home_raw
+                    )
 
-                    return home + away, home, away
+                    away = float(
+                        away_raw
+                    )
+
+                    return (
+                        home + away,
+                        home,
+                        away
+                    )
 
                 except ValueError:
+
                     return 0, 0, 0
 
     return 0, 0, 0
 
 
-def extrair_stat_sofascore(stats_data, item_name):
+# ==============================================================================
+# xG
+# ==============================================================================
 
-    return extrair_stat_periodo(
+def extrair_xg_sofascore(stats_data):
+
+    return extrair_stat_sofascore(
         stats_data,
-        item_name,
-        'ALL'
+        [
+            'Expected goals',
+            'Expected goals (xG)'
+        ]
     )
 
 
-def extrair_xg_sofascore(stats_data, periodo='ALL'):
+# ==============================================================================
+# EXTRAÇÃO COMPLETA
+# ==============================================================================
 
-    xg = extrair_stat_periodo(
-        stats_data,
-        'Expected goals',
-        periodo
+def extrair_dados_estatisticos(stats):
+
+    # Chutes no gol
+    sot_tot, sot_h, sot_a = extrair_stat_sofascore(
+        stats,
+        [
+            'Shots on target',
+            'Shots on goal'
+        ]
     )
 
-    if xg[0] > 0:
-        return xg
-
-    return extrair_stat_periodo(
-        stats_data,
-        'Expected goals (xG)',
-        periodo
+    # Chutes fora
+    sof_tot, sof_h, sof_a = extrair_stat_sofascore(
+        stats,
+        [
+            'Shots off target'
+        ]
     )
 
+    # Finalizações bloqueadas
+    blocked_tot, blocked_h, blocked_a = extrair_stat_sofascore(
+        stats,
+        [
+            'Blocked shots'
+        ]
+    )
 
-def extrair_grandes_chances(stats_data, periodo='ALL'):
+    # Finalizações totais
+    total_shots, shots_h, shots_a = extrair_stat_sofascore(
+        stats,
+        [
+            'Total shots'
+        ]
+    )
 
-    nomes = [
-        'Big chances',
-        'Big chances created'
-    ]
+    # Escanteios
+    corners_tot, corners_h, corners_a = extrair_stat_sofascore(
+        stats,
+        [
+            'Corner kicks'
+        ]
+    )
 
-    for nome in nomes:
+    # Grandes chances
+    big_tot, big_h, big_a = extrair_stat_sofascore(
+        stats,
+        [
+            'Big chances'
+        ]
+    )
 
-        valor = extrair_stat_periodo(
-            stats_data,
-            nome,
-            periodo
+    # Ataques perigosos
+    dangerous_tot, dangerous_h, dangerous_a = extrair_stat_sofascore(
+        stats,
+        [
+            'Dangerous attacks'
+        ]
+    )
+
+    # Ataques
+    attacks_tot, attacks_h, attacks_a = extrair_stat_sofascore(
+        stats,
+        [
+            'Attacks'
+        ]
+    )
+
+    # Posse
+    possession_tot, possession_h, possession_a = extrair_stat_sofascore(
+        stats,
+        [
+            'Ball possession'
+        ]
+    )
+
+    # xG
+    xg_tot, xg_h, xg_a = extrair_xg_sofascore(
+        stats
+    )
+
+    # Se o SofaScore não entregar Total shots,
+    # reconstruímos através das categorias disponíveis.
+    if total_shots <= 0:
+
+        total_shots = (
+            sot_tot
+            + sof_tot
+            + blocked_tot
         )
 
-        if valor[0] > 0:
-            return valor
+        shots_h = (
+            sot_h
+            + sof_h
+            + blocked_h
+        )
 
-    return 0, 0, 0
+        shots_a = (
+            sot_a
+            + sof_a
+            + blocked_a
+        )
+
+    return {
+
+        'xg': xg_tot,
+        'xg_h': xg_h,
+        'xg_a': xg_a,
+
+        'sot': sot_tot,
+        'sot_h': sot_h,
+        'sot_a': sot_a,
+
+        'shots': total_shots,
+        'shots_h': shots_h,
+        'shots_a': shots_a,
+
+        'corners': corners_tot,
+        'corners_h': corners_h,
+        'corners_a': corners_a,
+
+        'big': big_tot,
+        'big_h': big_h,
+        'big_a': big_a,
+
+        'dangerous': dangerous_tot,
+        'dangerous_h': dangerous_h,
+        'dangerous_a': dangerous_a,
+
+        'attacks': attacks_tot,
+        'attacks_h': attacks_h,
+        'attacks_a': attacks_a,
+
+        'possession': possession_tot,
+        'possession_h': possession_h,
+        'possession_a': possession_a
+    }
 
 
 # ==============================================================================
-# VALIDAÇÃO DA PARTIDA
+# FILTRO DE PARTIDAS
 # ==============================================================================
 
-def eh_partida_valida(nome_liga, time_casa, time_fora):
+def eh_partida_valida(
+    nome_liga,
+    time_casa,
+    time_fora
+):
 
-    texto = f" {nome_liga} {time_casa} {time_fora} ".lower()
+    texto = (
+        f" {nome_liga} "
+        f"{time_casa} "
+        f"{time_fora} "
+    ).lower()
 
     for termo in TERMOS_IGNORADOS:
 
@@ -370,15 +584,34 @@ def eh_partida_valida(nome_liga, time_casa, time_fora):
 # MINUTAGEM
 # ==============================================================================
 
-def extrair_minutagem_e_numero(item, eh_1h, eh_2h):
+def extrair_minutagem_e_numero(
+    item,
+    eh_1h,
+    eh_2h
+):
 
     status_desc = str(
-        item.get('status', {}).get('description', '')
+        item.get(
+            'status',
+            {}
+        ).get(
+            'description',
+            ''
+        )
     ).lower().strip()
 
     status_type = str(
-        item.get('status', {}).get('type', '')
+        item.get(
+            'status',
+            {}
+        ).get(
+            'type',
+            ''
+        )
     ).lower().strip()
+
+
+    # Bloqueio de prorrogação e pênaltis
 
     termos_prorrogacao = [
         'extra',
@@ -391,10 +624,18 @@ def extrair_minutagem_e_numero(item, eh_1h, eh_2h):
 
     for termo in termos_prorrogacao:
 
-        if termo in status_desc or termo in status_type:
+        if (
+            termo in status_desc
+            or termo in status_type
+        ):
             return None, None
 
+
     minuto = None
+
+
+    # Tentativa 1:
+    # leitura direta da descrição
 
     if "'" in status_desc:
 
@@ -406,637 +647,1020 @@ def extrair_minutagem_e_numero(item, eh_1h, eh_2h):
         )
 
         if min_limpo.isdigit():
-            minuto = int(min_limpo)
 
-    if not minuto:
-
-        time_data = item.get('time', {})
-
-        if isinstance(time_data, dict):
-
-            inicio = time_data.get(
-                'currentPeriodStartTimestamp'
+            minuto = int(
+                min_limpo
             )
 
-            if inicio:
 
-                agora = int(time.time())
+    # Tentativa 2:
+    # cálculo pelo timestamp
 
-                minuto_calculado = (
-                    agora - int(inicio)
+    if minuto is None:
+
+        time_data = item.get(
+            'time',
+            {}
+        )
+
+        if (
+            isinstance(
+                time_data,
+                dict
+            )
+            and
+            time_data.get(
+                'currentPeriodStartTimestamp'
+            )
+        ):
+
+            try:
+
+                now_ts = int(
+                    time.time()
+                )
+
+                start_ts = int(
+                    time_data.get(
+                        'currentPeriodStartTimestamp'
+                    )
+                )
+
+                m_calc = (
+                    now_ts - start_ts
                 ) // 60
 
                 if eh_2h:
-                    minuto_calculado += 45
+                    m_calc += 45
 
-                if 1 <= minuto_calculado <= 90:
-                    minuto = minuto_calculado
+                if 1 <= m_calc <= 90:
+                    minuto = m_calc
 
-    if minuto:
+            except Exception:
+                pass
 
-        if eh_1h and minuto <= 45:
-            return f"{minuto}' do 1º tempo", minuto
 
-        if eh_2h and 45 <= minuto <= 90:
-            return f"{minuto}' do 2º tempo", minuto
+    if minuto is None:
+        return None, None
+
+
+    # 1º tempo
+
+    if eh_1h and 1 <= minuto <= 45:
+
+        return (
+            f"{minuto}' do 1º tempo",
+            minuto
+        )
+
+
+    # 2º tempo
+
+    if eh_2h and 45 <= minuto <= 90:
+
+        return (
+            f"{minuto}' do 2º tempo",
+            minuto
+        )
+
 
     return None, None
 
 
 # ==============================================================================
-# NORMALIZAÇÃO
+# EQUILÍBRIO DO JOGO
 # ==============================================================================
 
-def limitar(valor, minimo=0, maximo=100):
+def calcular_equilibrio(
+    dados,
+    gols_c,
+    gols_f
+):
 
-    return max(
-        minimo,
-        min(maximo, valor)
-    )
+    xg_h = dados['xg_h']
+    xg_a = dados['xg_a']
+
+    sot_h = dados['sot_h']
+    sot_a = dados['sot_a']
+
+    shots_h = dados['shots_h']
+    shots_a = dados['shots_a']
+
+    corners_h = dados['corners_h']
+    corners_a = dados['corners_a']
 
 
-def percentual(valor, referencia):
+    total_xg = xg_h + xg_a
+    total_sot = sot_h + sot_a
+    total_shots = shots_h + shots_a
 
-    if referencia <= 0:
+
+    # Sem dados suficientes
+    if (
+        total_xg <= 0
+        and total_sot <= 0
+        and total_shots <= 0
+    ):
         return 0
 
-    return limitar(
-        (valor / referencia) * 100
+
+    # Quanto maior a concentração,
+    # menor o equilíbrio.
+
+    desequilibrios = []
+
+
+    if total_xg > 0:
+        desequilibrios.append(
+            abs(xg_h - xg_a)
+            / total_xg
+        )
+
+    if total_sot > 0:
+        desequilibrios.append(
+            abs(sot_h - sot_a)
+            / total_sot
+        )
+
+    if total_shots > 0:
+        desequilibrios.append(
+            abs(shots_h - shots_a)
+            / total_shots
+        )
+
+    total_corners = (
+        corners_h
+        + corners_a
+    )
+
+    if total_corners > 0:
+        desequilibrios.append(
+            abs(corners_h - corners_a)
+            / total_corners
+        )
+
+
+    if not desequilibrios:
+        return 0
+
+
+    media = sum(
+        desequilibrios
+    ) / len(
+        desequilibrios
+    )
+
+
+    # 0 = equilibrado
+    # 1 = extremamente desequilibrado
+
+    return min(
+        1,
+        media
     )
 
 
 # ==============================================================================
-# ANÁLISE DE INTENSIDADE
+# PONTUAÇÃO - OVER 0.5 HT
 # ==============================================================================
 
-def analisar_intensidade(
+def pontuar_over_05_ht(
     minuto,
-    finalizacoes,
-    chutes_alvo,
-    grandes_chances,
-    xg,
-    escanteios
+    dados,
+    pressao_pico,
+    pressao_media
 ):
 
-    score = 0
+    pontos = 0
+    motivos = []
 
+
+    xg = dados['xg']
+    sot = dados['sot']
+    shots = dados['shots']
+    corners = dados['corners']
+    big = dados['big']
+    dangerous = dados['dangerous']
+
+
+    # --------------------------------------------------
     # xG
-    if minuto <= 20:
+    # --------------------------------------------------
 
-        if xg >= 0.70:
-            score += 30
-        elif xg >= 0.50:
-            score += 24
-        elif xg >= 0.35:
-            score += 17
+    if xg >= 0.75:
 
-    elif minuto <= 30:
+        pontos += 3
+        motivos.append(
+            "xG muito forte"
+        )
 
-        if xg >= 0.95:
-            score += 30
-        elif xg >= 0.70:
-            score += 24
-        elif xg >= 0.50:
-            score += 17
+    elif xg >= 0.55:
 
-    else:
+        pontos += 2
+        motivos.append(
+            "xG forte"
+        )
 
-        if xg >= 1.20:
-            score += 30
-        elif xg >= 0.90:
-            score += 24
-        elif xg >= 0.65:
-            score += 17
+    elif xg >= 0.40:
 
+        pontos += 1
+        motivos.append(
+            "xG aceitável"
+        )
+
+
+    # --------------------------------------------------
     # Chutes no alvo
-    if chutes_alvo >= 5:
-        score += 22
-    elif chutes_alvo >= 4:
-        score += 18
-    elif chutes_alvo >= 3:
-        score += 14
-    elif chutes_alvo >= 2:
-        score += 9
+    # --------------------------------------------------
 
+    if sot >= 4:
+
+        pontos += 3
+        motivos.append(
+            "4+ chutes no alvo"
+        )
+
+    elif sot >= 3:
+
+        pontos += 2
+        motivos.append(
+            "3 chutes no alvo"
+        )
+
+    elif sot >= 2:
+
+        pontos += 1
+        motivos.append(
+            "2 chutes no alvo"
+        )
+
+
+    # --------------------------------------------------
     # Finalizações
-    if finalizacoes >= 12:
-        score += 16
-    elif finalizacoes >= 9:
-        score += 13
-    elif finalizacoes >= 7:
-        score += 10
-    elif finalizacoes >= 5:
-        score += 6
+    # --------------------------------------------------
 
-    # Grandes chances
-    if grandes_chances >= 3:
-        score += 20
-    elif grandes_chances >= 2:
-        score += 16
-    elif grandes_chances >= 1:
-        score += 9
+    if shots >= 10:
 
+        pontos += 2
+        motivos.append(
+            "10+ finalizações"
+        )
+
+    elif shots >= 7:
+
+        pontos += 1
+        motivos.append(
+            "7+ finalizações"
+        )
+
+
+    # --------------------------------------------------
     # Escanteios
-    if escanteios >= 7:
-        score += 8
-    elif escanteios >= 5:
-        score += 6
-    elif escanteios >= 3:
-        score += 4
+    # --------------------------------------------------
 
-    return limitar(score)
+    if corners >= 4:
 
+        pontos += 2
+        motivos.append(
+            "4+ escanteios"
+        )
 
-# ==============================================================================
-# SCORE DE PRESSÃO
-# ==============================================================================
+    elif corners >= 2:
 
-def calcular_score_pressao(pressao):
-
-    score = 0
-
-    pico = pressao.get('pico', 0)
-    media = pressao.get('media', 0)
-    aceleracao = pressao.get('aceleracao', 0)
-
-    if pico >= 70:
-        score += 30
-    elif pico >= 55:
-        score += 24
-    elif pico >= 40:
-        score += 17
-    elif pico >= 30:
-        score += 10
-
-    if media >= 55:
-        score += 25
-    elif media >= 40:
-        score += 19
-    elif media >= 30:
-        score += 12
-
-    if aceleracao >= 20:
-        score += 25
-    elif aceleracao >= 10:
-        score += 18
-    elif aceleracao >= 5:
-        score += 10
-
-    if pressao.get('tendencia') in ['CASA', 'FORA']:
-        score += 10
-
-    return limitar(score)
+        pontos += 1
+        motivos.append(
+            "2+ escanteios"
+        )
 
 
-# ==============================================================================
-# CONTEXTO DO PLACAR
-# ==============================================================================
+    # --------------------------------------------------
+    # Grandes chances
+    # --------------------------------------------------
 
-def calcular_contexto_placar(
-    gols_c,
-    gols_f,
-    minuto,
-    mercado
-):
+    if big >= 2:
 
-    total = gols_c + gols_f
-    diferenca = abs(gols_c - gols_f)
+        pontos += 3
+        motivos.append(
+            "2+ grandes chances"
+        )
 
-    score = 50
+    elif big >= 1:
 
-    # --------------------------------------------------------------------------
-    # HT
-    # --------------------------------------------------------------------------
-
-    if mercado == '05_HT':
-
-        if total == 0:
-            score += 15
-
-        if diferenca == 0:
-            score += 10
-
-        if minuto >= 30:
-            score -= 5
-
-    elif mercado == '15_HT':
-
-        if total == 1:
-            score += 18
-
-        if diferenca == 1:
-            score += 10
-
-        if minuto >= 30:
-            score -= 5
-
-    # --------------------------------------------------------------------------
-    # FT
-    # --------------------------------------------------------------------------
-
-    elif mercado == 'LIMITE_FT':
-
-        if diferenca == 0:
-            score += 18
-
-        elif diferenca == 1:
-            score += 10
-
-        elif diferenca == 2:
-            score += 3
-
-        elif diferenca >= 3:
-            score -= 15
-
-        if total >= 4:
-            score -= 5
-
-        # Último terço costuma ficar mais interessante
-        if minuto >= 75:
-            score += 5
-
-    return limitar(score)
+        pontos += 2
+        motivos.append(
+            "grande chance criada"
+        )
 
 
-# ==============================================================================
-# FILTRO DE JOGO MORTO
-# ==============================================================================
+    # --------------------------------------------------
+    # Ataques perigosos
+    # --------------------------------------------------
 
-def jogo_morto(
-    minuto,
-    xg,
-    finalizacoes,
-    chutes_alvo,
-    grandes_chances,
-    pressao_score
-):
+    if dangerous >= 25:
 
-    # Não considera morto se já existem grandes chances.
-    if grandes_chances >= 2:
-        return False
+        pontos += 2
+        motivos.append(
+            "muita pressão ofensiva"
+        )
 
-    # Pouquíssima produção ofensiva
+    elif dangerous >= 15:
+
+        pontos += 1
+        motivos.append(
+            "pressão ofensiva"
+        )
+
+
+    # --------------------------------------------------
+    # Gráfico de pressão
+    # --------------------------------------------------
+
+    if pressao_pico >= 55:
+
+        pontos += 3
+        motivos.append(
+            "pico de pressão muito alto"
+        )
+
+    elif pressao_pico >= 40:
+
+        pontos += 2
+        motivos.append(
+            "pico de pressão alto"
+        )
+
+    elif pressao_pico >= 30:
+
+        pontos += 1
+        motivos.append(
+            "pressão consistente"
+        )
+
+
+    # --------------------------------------------------
+    # Tempo
+    # --------------------------------------------------
+
+    # Depois dos 20', damos maior peso ao volume.
     if minuto >= 20:
 
-        if (
-            xg < 0.30 and
-            finalizacoes < 5 and
-            chutes_alvo < 2 and
-            pressao_score < 30
-        ):
-            return True
+        if sot >= 3:
+            pontos += 1
 
-    if minuto >= 35:
+        if xg >= 0.55:
+            pontos += 1
 
-        if (
-            xg < 0.45 and
-            finalizacoes < 7 and
-            chutes_alvo < 2 and
-            grandes_chances == 0 and
-            pressao_score < 35
-        ):
-            return True
 
-    if minuto >= 65:
-
-        if (
-            xg < 0.70 and
-            finalizacoes < 8 and
-            chutes_alvo < 2 and
-            grandes_chances == 0 and
-            pressao_score < 35
-        ):
-            return True
-
-    return False
+    return pontos, motivos
 
 
 # ==============================================================================
-# SCORE +0,5 HT
+# PONTUAÇÃO - OVER 1.5 HT
 # ==============================================================================
 
-def score_over_05_ht(
+def pontuar_over_15_ht(
     minuto,
-    xg,
-    finalizacoes,
-    chutes_alvo,
-    grandes_chances,
-    escanteios,
-    pressao_score,
-    contexto
+    dados,
+    pressao_pico,
+    pressao_media
 ):
 
-    score = 0
+    pontos = 0
+    motivos = []
 
+
+    xg = dados['xg']
+    sot = dados['sot']
+    shots = dados['shots']
+    corners = dados['corners']
+    big = dados['big']
+    dangerous = dados['dangerous']
+
+
+    # Para buscar o segundo gol no HT,
+    # somos mais exigentes.
+
+
+    # --------------------------------------------------
     # xG
-    if xg >= 1.00:
-        score += 27
-    elif xg >= 0.75:
-        score += 23
-    elif xg >= 0.55:
-        score += 19
-    elif xg >= 0.40:
-        score += 14
-    elif xg >= 0.30:
-        score += 8
+    # --------------------------------------------------
 
+    if xg >= 1.25:
+
+        pontos += 4
+        motivos.append(
+            "xG muito alto"
+        )
+
+    elif xg >= 1.00:
+
+        pontos += 3
+        motivos.append(
+            "xG alto"
+        )
+
+    elif xg >= 0.80:
+
+        pontos += 2
+        motivos.append(
+            "xG forte"
+        )
+
+    elif xg >= 0.65:
+
+        pontos += 1
+        motivos.append(
+            "xG razoável"
+        )
+
+
+    # --------------------------------------------------
     # Chutes no alvo
-    if chutes_alvo >= 5:
-        score += 18
-    elif chutes_alvo >= 4:
-        score += 15
-    elif chutes_alvo >= 3:
-        score += 12
-    elif chutes_alvo >= 2:
-        score += 8
+    # --------------------------------------------------
 
-    # Grandes chances
-    if grandes_chances >= 3:
-        score += 20
-    elif grandes_chances >= 2:
-        score += 17
-    elif grandes_chances >= 1:
-        score += 9
+    if sot >= 6:
 
-    # Volume
-    if finalizacoes >= 12:
-        score += 12
-    elif finalizacoes >= 9:
-        score += 10
-    elif finalizacoes >= 7:
-        score += 8
-    elif finalizacoes >= 5:
-        score += 5
+        pontos += 4
+        motivos.append(
+            "6+ chutes no alvo"
+        )
 
+    elif sot >= 4:
+
+        pontos += 3
+        motivos.append(
+            "4+ chutes no alvo"
+        )
+
+    elif sot >= 3:
+
+        pontos += 1
+        motivos.append(
+            "3 chutes no alvo"
+        )
+
+
+    # --------------------------------------------------
+    # Finalizações
+    # --------------------------------------------------
+
+    if shots >= 12:
+
+        pontos += 3
+        motivos.append(
+            "12+ finalizações"
+        )
+
+    elif shots >= 9:
+
+        pontos += 2
+        motivos.append(
+            "9+ finalizações"
+        )
+
+    elif shots >= 7:
+
+        pontos += 1
+
+
+    # --------------------------------------------------
     # Escanteios
-    if escanteios >= 6:
-        score += 5
-    elif escanteios >= 4:
-        score += 3
+    # --------------------------------------------------
 
+    if corners >= 5:
+
+        pontos += 2
+        motivos.append(
+            "5+ escanteios"
+        )
+
+    elif corners >= 3:
+
+        pontos += 1
+        motivos.append(
+            "3+ escanteios"
+        )
+
+
+    # --------------------------------------------------
+    # Grandes chances
+    # --------------------------------------------------
+
+    if big >= 2:
+
+        pontos += 4
+        motivos.append(
+            "2+ grandes chances"
+        )
+
+    elif big >= 1:
+
+        pontos += 2
+        motivos.append(
+            "grande chance criada"
+        )
+
+
+    # --------------------------------------------------
     # Pressão
-    score += int(pressao_score * 0.10)
+    # --------------------------------------------------
 
-    # Contexto
-    score += int((contexto - 50) * 0.08)
+    if pressao_pico >= 55:
 
-    # Quanto mais perto do intervalo, mais exigente
-    if minuto >= 35 and xg < 0.60:
-        score -= 8
+        pontos += 3
+        motivos.append(
+            "pressão muito alta"
+        )
 
-    return limitar(score)
+    elif pressao_pico >= 40:
+
+        pontos += 2
+        motivos.append(
+            "pressão alta"
+        )
+
+    elif pressao_pico >= 30:
+
+        pontos += 1
+
+
+    # --------------------------------------------------
+    # Final do HT
+    # --------------------------------------------------
+
+    if minuto >= 24:
+
+        if sot >= 4:
+            pontos += 1
+
+        if xg >= 1.00:
+            pontos += 1
+
+
+    return pontos, motivos
 
 
 # ==============================================================================
-# SCORE +1,5 HT
+# PONTUAÇÃO - GOL LIMITE FT
 # ==============================================================================
 
-def score_over_15_ht(
+def pontuar_limite_ft(
     minuto,
-    xg,
-    finalizacoes,
-    chutes_alvo,
-    grandes_chances,
-    escanteios,
-    pressao_score,
-    contexto
+    dados,
+    pressao_pico,
+    pressao_media
 ):
 
-    score = 0
-
-    # Para o segundo gol, exigência maior.
-    if xg >= 1.40:
-        score += 28
-    elif xg >= 1.10:
-        score += 24
-    elif xg >= 0.90:
-        score += 19
-    elif xg >= 0.70:
-        score += 13
-    elif xg >= 0.55:
-        score += 7
-
-    if chutes_alvo >= 6:
-        score += 18
-    elif chutes_alvo >= 5:
-        score += 15
-    elif chutes_alvo >= 4:
-        score += 12
-    elif chutes_alvo >= 3:
-        score += 8
-
-    if grandes_chances >= 3:
-        score += 22
-    elif grandes_chances >= 2:
-        score += 18
-    elif grandes_chances >= 1:
-        score += 10
-
-    if finalizacoes >= 14:
-        score += 12
-    elif finalizacoes >= 11:
-        score += 10
-    elif finalizacoes >= 8:
-        score += 7
-
-    if escanteios >= 7:
-        score += 5
-    elif escanteios >= 5:
-        score += 3
-
-    score += int(pressao_score * 0.12)
-
-    score += int((contexto - 50) * 0.10)
-
-    if minuto >= 35 and xg < 0.90:
-        score -= 10
-
-    return limitar(score)
+    pontos = 0
+    motivos = []
 
 
-# ==============================================================================
-# SCORE GOL LIMITE FT
-# ==============================================================================
+    xg = dados['xg']
+    sot = dados['sot']
+    shots = dados['shots']
+    corners = dados['corners']
+    big = dados['big']
+    dangerous = dados['dangerous']
 
-def score_limite_ft(
-    minuto,
-    xg,
-    finalizacoes,
-    chutes_alvo,
-    grandes_chances,
-    escanteios,
-    pressao_score,
-    contexto
-):
 
-    score = 0
-
+    # --------------------------------------------------
     # xG acumulado
-    if xg >= 2.20:
-        score += 27
-    elif xg >= 1.80:
-        score += 24
-    elif xg >= 1.40:
-        score += 20
-    elif xg >= 1.10:
-        score += 15
-    elif xg >= 0.85:
-        score += 9
+    # --------------------------------------------------
 
+    if xg >= 2.40:
+
+        pontos += 4
+        motivos.append(
+            "xG muito alto"
+        )
+
+    elif xg >= 1.90:
+
+        pontos += 3
+        motivos.append(
+            "xG alto"
+        )
+
+    elif xg >= 1.50:
+
+        pontos += 2
+        motivos.append(
+            "xG forte"
+        )
+
+    elif xg >= 1.20:
+
+        pontos += 1
+        motivos.append(
+            "xG aceitável"
+        )
+
+
+    # --------------------------------------------------
     # Chutes no alvo
-    if chutes_alvo >= 8:
-        score += 18
-    elif chutes_alvo >= 6:
-        score += 15
-    elif chutes_alvo >= 4:
-        score += 11
-    elif chutes_alvo >= 3:
-        score += 7
+    # --------------------------------------------------
 
-    # Grandes chances
-    if grandes_chances >= 4:
-        score += 20
-    elif grandes_chances >= 3:
-        score += 17
-    elif grandes_chances >= 2:
-        score += 13
-    elif grandes_chances >= 1:
-        score += 7
+    if sot >= 9:
 
-    # Volume
-    if finalizacoes >= 18:
-        score += 12
-    elif finalizacoes >= 14:
-        score += 10
-    elif finalizacoes >= 10:
-        score += 7
-    elif finalizacoes >= 8:
-        score += 4
+        pontos += 4
+        motivos.append(
+            "9+ chutes no alvo"
+        )
 
+    elif sot >= 7:
+
+        pontos += 3
+        motivos.append(
+            "7+ chutes no alvo"
+        )
+
+    elif sot >= 5:
+
+        pontos += 2
+        motivos.append(
+            "5+ chutes no alvo"
+        )
+
+    elif sot >= 4:
+
+        pontos += 1
+        motivos.append(
+            "4+ chutes no alvo"
+        )
+
+
+    # --------------------------------------------------
+    # Finalizações
+    # --------------------------------------------------
+
+    if shots >= 22:
+
+        pontos += 3
+        motivos.append(
+            "22+ finalizações"
+        )
+
+    elif shots >= 17:
+
+        pontos += 2
+        motivos.append(
+            "17+ finalizações"
+        )
+
+    elif shots >= 12:
+
+        pontos += 1
+        motivos.append(
+            "12+ finalizações"
+        )
+
+
+    # --------------------------------------------------
     # Escanteios
-    if escanteios >= 9:
-        score += 5
-    elif escanteios >= 7:
-        score += 4
-    elif escanteios >= 5:
-        score += 2
+    # --------------------------------------------------
 
-    # Pressão tem bastante importância no FT
-    score += int(pressao_score * 0.15)
+    if corners >= 8:
 
-    # Contexto
-    score += int((contexto - 50) * 0.15)
+        pontos += 3
+        motivos.append(
+            "8+ escanteios"
+        )
 
-    # Aos 80+ precisa haver produção real
-    if minuto >= 80:
+    elif corners >= 6:
 
-        if xg < 1.10 and chutes_alvo < 4 and grandes_chances < 2:
-            score -= 12
+        pontos += 2
+        motivos.append(
+            "6+ escanteios"
+        )
 
-    return limitar(score)
+    elif corners >= 4:
+
+        pontos += 1
+        motivos.append(
+            "4+ escanteios"
+        )
+
+
+    # --------------------------------------------------
+    # Grandes chances
+    # --------------------------------------------------
+
+    if big >= 4:
+
+        pontos += 4
+        motivos.append(
+            "4+ grandes chances"
+        )
+
+    elif big >= 3:
+
+        pontos += 3
+        motivos.append(
+            "3+ grandes chances"
+        )
+
+    elif big >= 2:
+
+        pontos += 2
+        motivos.append(
+            "2+ grandes chances"
+        )
+
+    elif big >= 1:
+
+        pontos += 1
+
+
+    # --------------------------------------------------
+    # Ataques perigosos
+    # --------------------------------------------------
+
+    if dangerous >= 70:
+
+        pontos += 3
+        motivos.append(
+            "70+ ataques perigosos"
+        )
+
+    elif dangerous >= 50:
+
+        pontos += 2
+        motivos.append(
+            "50+ ataques perigosos"
+        )
+
+    elif dangerous >= 35:
+
+        pontos += 1
+
+
+    # --------------------------------------------------
+    # Pressão
+    # --------------------------------------------------
+
+    if pressao_pico >= 60:
+
+        pontos += 4
+        motivos.append(
+            "pico de pressão muito alto"
+        )
+
+    elif pressao_pico >= 45:
+
+        pontos += 3
+        motivos.append(
+            "pico de pressão alto"
+        )
+
+    elif pressao_pico >= 30:
+
+        pontos += 1
+
+
+    # --------------------------------------------------
+    # Últimos minutos
+    # --------------------------------------------------
+
+    if minuto >= 70:
+
+        if sot >= 6:
+            pontos += 1
+
+        if corners >= 5:
+            pontos += 1
+
+
+    return pontos, motivos
 
 
 # ==============================================================================
 # CLASSIFICAÇÃO
 # ==============================================================================
 
-def classificacao_score(score):
+def classificar_pontuacao(
+    pontos,
+    mercado
+):
 
-    if score >= 85:
-        return "🔥 PREMIUM"
+    if mercado == '05_HT':
 
-    if score >= 75:
-        return "🟢 FORTE"
+        if pontos >= 12:
+            return "🔥 MUITO FORTE"
 
-    if score >= 68:
-        return "🟡 OBSERVAÇÃO"
+        if pontos >= 9:
+            return "🟢 FORTE"
 
-    return "🔴 FRACO"
+        if pontos >= 7:
+            return "🟡 MODERADO"
+
+        return "⚪ FRACO"
 
 
-def confianca_score(score):
+    if mercado == '15_HT':
 
-    return round(
-        5 + (score / 20),
-        1
-    )
+        if pontos >= 15:
+            return "🔥 MUITO FORTE"
+
+        if pontos >= 12:
+            return "🟢 FORTE"
+
+        if pontos >= 9:
+            return "🟡 MODERADO"
+
+        return "⚪ FRACO"
+
+
+    if mercado == 'LIMITE_FT':
+
+        if pontos >= 17:
+            return "🔥 MUITO FORTE"
+
+        if pontos >= 14:
+            return "🟢 FORTE"
+
+        if pontos >= 11:
+            return "🟡 MODERADO"
+
+        return "⚪ FRACO"
+
+
+    return "⚪"
 
 
 # ==============================================================================
-# RESUMO DO SCORE
+# TEXTO DE ESTATÍSTICAS
 # ==============================================================================
 
-def gerar_linha_score(score):
+def montar_bloco_estatisticas(
+    dados,
+    time_casa,
+    time_fora,
+    pressao_texto
+):
 
-    classe = classificacao_score(score)
-    confianca = confianca_score(score)
+    linha_xg = ""
+
+    if dados['xg'] > 0:
+
+        linha_xg = (
+            f"📈 *xG:* `{dados['xg']:.2f}` "
+            f"_({time_casa} "
+            f"{dados['xg_h']:.2f} | "
+            f"{dados['xg_a']:.2f} "
+            f"{time_fora})_\n"
+        )
+
 
     return (
-        f"🎯 *Goal Score:* `{score}/100` {classe}\n"
-        f"⭐ *Confiança:* `{confianca}/10`\n"
+
+        linha_xg
+
+        +
+
+        f"🎯 *Chutes no Gol:* "
+        f"`{int(dados['sot'])}` "
+        f"_({int(dados['sot_h'])}x"
+        f"{int(dados['sot_a'])})_\n"
+
+        +
+
+        f"⚽ *Finalizações:* "
+        f"`{int(dados['shots'])}` "
+        f"_({int(dados['shots_h'])}x"
+        f"{int(dados['shots_a'])})_\n"
+
+        +
+
+        f"🚩 *Escanteios:* "
+        f"`{int(dados['corners'])}` "
+        f"_({int(dados['corners_h'])}x"
+        f"{int(dados['corners_a'])})\n"
+
+        +
+
+        f"💥 *Grandes Chances:* "
+        f"`{int(dados['big'])}` "
+        f"_({int(dados['big_h'])}x"
+        f"{int(dados['big_a'])})\n"
+
+        +
+
+        f"🔥 *Ataques Perigosos:* "
+        f"`{int(dados['dangerous'])}` "
+        f"_({int(dados['dangerous_h'])}x"
+        f"{int(dados['dangerous_a'])})\n"
+
+        +
+
+        pressao_texto
     )
 
 
 # ==============================================================================
-# ALERTA — VALIDAÇÃO
+# VALIDAÇÃO DOS ALERTAS
 # ==============================================================================
 
-def validar_alertas_enviados(jogos_dict):
+def validar_alertas_enviados(
+    jogos_dict
+):
 
     chaves_para_remover = []
 
-    for chave_alerta, info in list(alertas_pendentes.items()):
+
+    for chave_alerta, info in list(
+        alertas_pendentes.items()
+    ):
 
         event_id = info['event_id']
+
         message_id = info['message_id']
+
         gols_no_alerta = info['gols_alerta']
+
         mercado = info['mercado']
+
         msg_original = info['mensagem_original']
 
-        item_jogo = jogos_dict.get(event_id)
 
+        item_jogo = jogos_dict.get(
+            event_id
+        )
+
+
+        # Se o jogo desapareceu do endpoint
+        # ao vivo, esperamos a próxima rodada.
         if not item_jogo:
             continue
 
+
         gols_c = item_jogo.get(
-            'homeScore', {}
-        ).get('current', 0)
+            'homeScore',
+            {}
+        ).get(
+            'current',
+            0
+        )
 
         gols_f = item_jogo.get(
-            'awayScore', {}
-        ).get('current', 0)
+            'awayScore',
+            {}
+        ).get(
+            'current',
+            0
+        )
 
-        gols_atuais = gols_c + gols_f
+
+        gols_atuais = (
+            gols_c
+            + gols_f
+        )
+
 
         status_desc = str(
-            item_jogo.get('status', {}).get('description', '')
+            item_jogo.get(
+                'status',
+                {}
+            ).get(
+                'description',
+                ''
+            )
         ).lower()
+
 
         time_status = str(
-            item_jogo.get('status', {}).get('type', '')
+            item_jogo.get(
+                'status',
+                {}
+            ).get(
+                'type',
+                ''
+            )
         ).lower()
 
+
         eh_intervalo = (
-            'halftime' in status_desc or
-            'ht' in status_desc or
-            time_status == 'halftime'
+            'halftime' in status_desc
+            or 'half time' in status_desc
+            or time_status == 'halftime'
         )
+
 
         eh_2h = (
-            '2nd' in status_desc or
-            time_status == '2nd'
+            '2nd' in status_desc
+            or 'second half' in status_desc
         )
+
 
         eh_finalizado = (
-            time_status == 'finished' or
-            'ended' in status_desc or
-            'ft' in status_desc or
-            'extra' in status_desc
+            time_status == 'finished'
+            or 'ended' in status_desc
+            or 'ft' in status_desc
         )
 
-        # ----------------------------------------------------------------------
+
+        # ==============================================================
         # GREEN
-        # ----------------------------------------------------------------------
+        # ==============================================================
 
         if gols_atuais > gols_no_alerta:
 
@@ -1050,45 +1674,65 @@ def validar_alertas_enviados(jogos_dict):
                 nova_mensagem
             )
 
-            chaves_para_remover.append(chave_alerta)
+            chaves_para_remover.append(
+                chave_alerta
+            )
 
-        # ----------------------------------------------------------------------
+            continue
+
+
+        # ==============================================================
         # RED HT
-        # ----------------------------------------------------------------------
+        # ==============================================================
 
-        else:
+        if mercado in [
+            '05_HT',
+            '15_HT'
+        ]:
 
-            if mercado in ['05_HT', '15_HT']:
+            if (
+                eh_intervalo
+                or eh_2h
+                or eh_finalizado
+            ):
 
-                if eh_intervalo or eh_2h or eh_finalizado:
+                nova_mensagem = (
+                    f"{msg_original}\n\n"
+                    f"❌️❌️❌️ *RED*"
+                )
 
-                    nova_mensagem = (
-                        f"{msg_original}\n\n"
-                        f"❌️❌️❌️ *RED*"
-                    )
+                editar_alerta(
+                    message_id,
+                    nova_mensagem
+                )
 
-                    editar_alerta(
-                        message_id,
-                        nova_mensagem
-                    )
+                chaves_para_remover.append(
+                    chave_alerta
+                )
 
-                    chaves_para_remover.append(chave_alerta)
 
-            elif mercado == 'LIMITE_FT':
+        # ==============================================================
+        # RED FT
+        # ==============================================================
 
-                if eh_finalizado:
+        elif mercado == 'LIMITE_FT':
 
-                    nova_mensagem = (
-                        f"{msg_original}\n\n"
-                        f"❌️❌️❌️ *RED*"
-                    )
+            if eh_finalizado:
 
-                    editar_alerta(
-                        message_id,
-                        nova_mensagem
-                    )
+                nova_mensagem = (
+                    f"{msg_original}\n\n"
+                    f"❌️❌️❌️ *RED*"
+                )
 
-                    chaves_para_remover.append(chave_alerta)
+                editar_alerta(
+                    message_id,
+                    nova_mensagem
+                )
+
+                chaves_para_remover.append(
+                    chave_alerta
+                )
+
 
     for chave in chaves_para_remover:
 
@@ -1104,17 +1748,21 @@ def validar_alertas_enviados(jogos_dict):
 
 def checar_jogos_ao_vivo():
 
-    horario = obter_horario_brasil().strftime('%H:%M:%S')
+    horario = obter_horario_brasil().strftime(
+        '%H:%M:%S'
+    )
 
     print(
         f"[{horario}] "
-        f"Faro de Beagle analisando partidas..."
+        f"Faro de Beagle buscando partidas no SofaScore..."
     )
 
+
     url = (
-        "https://api.sofascore.com/api/v1/"
+        "https://www.sofascore.com/api/v1/"
         "sport/football/events/live"
     )
+
 
     try:
 
@@ -1123,76 +1771,109 @@ def checar_jogos_ao_vivo():
             timeout=15
         )
 
+
         if response.status_code != 200:
 
             print(
                 f"[{horario}] "
-                f"Status retornado: "
+                f"SofaScore retornou "
                 f"{response.status_code}"
             )
 
-            return False
+            return
 
-        dados = response.json()
 
-        jogos = dados.get(
+        dados_response = response.json()
+
+        jogos = dados_response.get(
             'events',
             []
         )
+
 
         print(
             f"[{horario}] "
             f"Partidas ao vivo: {len(jogos)}"
         )
 
+
         jogos_dict = {
-            str(item.get('id', '')).strip(): item
+
+            str(
+                item.get('id')
+            ).strip(): item
+
             for item in jogos
+
             if item.get('id')
         }
 
+
+        # Primeiro valida os alertas antigos
         validar_alertas_enviados(
             jogos_dict
         )
 
-        houve_alerta = False
+
+        # ==============================================================
+        # ANALISA CADA JOGO
+        # ==============================================================
 
         for item in jogos:
+
 
             event_id = str(
                 item.get('id', '')
             ).strip()
 
+
             if not event_id:
                 continue
 
+
             nome_liga = item.get(
-                'tournament', {}
+                'tournament',
+                {}
             ).get(
                 'name',
                 'Liga'
             )
 
+
             time_casa = item.get(
-                'homeTeam', {}
+                'homeTeam',
+                {}
             ).get(
                 'name',
                 'Casa'
             )
 
+
             time_fora = item.get(
-                'awayTeam', {}
+                'awayTeam',
+                {}
             ).get(
                 'name',
                 'Fora'
             )
+
+
+            # ----------------------------------------------------------
+            # FILTRO
+            # ----------------------------------------------------------
 
             if not eh_partida_valida(
                 nome_liga,
                 time_casa,
                 time_fora
             ):
+
                 continue
+
+
+            # ----------------------------------------------------------
+            # LIGA / PAÍS
+            # ----------------------------------------------------------
 
             category = item.get(
                 'tournament',
@@ -1202,22 +1883,32 @@ def checar_jogos_ao_vivo():
                 {}
             )
 
+
             nome_pais = category.get(
                 'name',
                 ''
             )
 
+
             if (
-                nome_pais and
-                nome_pais.lower()
+                nome_pais
+                and nome_pais.lower()
                 not in nome_liga.lower()
             ):
+
                 liga_formatada = (
-                    f"{nome_pais} - {nome_liga}"
+                    f"{nome_pais} - "
+                    f"{nome_liga}"
                 )
 
             else:
+
                 liga_formatada = nome_liga
+
+
+            # ----------------------------------------------------------
+            # STATUS
+            # ----------------------------------------------------------
 
             status_desc = str(
                 item.get(
@@ -1229,6 +1920,7 @@ def checar_jogos_ao_vivo():
                 )
             ).lower()
 
+
             time_status = str(
                 item.get(
                     'status',
@@ -1239,23 +1931,30 @@ def checar_jogos_ao_vivo():
                 )
             ).lower()
 
-            # --------------------------------------------------------------
-            # Prorrogação
-            # --------------------------------------------------------------
+
+            # ----------------------------------------------------------
+            # BLOQUEIO PRORROGAÇÃO
+            # ----------------------------------------------------------
 
             if any(
-                term in status_desc or
-                term in time_status
+                termo in status_desc
+                or termo in time_status
 
-                for term in [
+                for termo in [
                     'extra',
-                    'et',
                     'extratime',
                     'overtime',
-                    'penalties'
+                    'penalties',
+                    'pen'
                 ]
             ):
+
                 continue
+
+
+            # ----------------------------------------------------------
+            # PLACAR
+            # ----------------------------------------------------------
 
             gols_c = item.get(
                 'homeScore',
@@ -1265,6 +1964,7 @@ def checar_jogos_ao_vivo():
                 0
             )
 
+
             gols_f = item.get(
                 'awayScore',
                 {}
@@ -1273,20 +1973,42 @@ def checar_jogos_ao_vivo():
                 0
             )
 
-            total_gols = gols_c + gols_f
+
+            total_gols = (
+                gols_c
+                + gols_f
+            )
+
+
+            # ----------------------------------------------------------
+            # TEMPO
+            # ----------------------------------------------------------
 
             eh_1h = (
-                time_status == 'inprogress' and
-                '1st' in status_desc
+                time_status == 'inprogress'
+                and (
+                    '1st' in status_desc
+                    or 'first half' in status_desc
+                )
             )
+
 
             eh_2h = (
-                time_status == 'inprogress' and
-                '2nd' in status_desc
+                time_status == 'inprogress'
+                and (
+                    '2nd' in status_desc
+                    or 'second half' in status_desc
+                )
             )
 
-            if not (eh_1h or eh_2h):
+
+            if not (
+                eh_1h
+                or eh_2h
+            ):
+
                 continue
+
 
             minutagem, minuto_num = (
                 extrair_minutagem_e_numero(
@@ -1296,601 +2018,578 @@ def checar_jogos_ao_vivo():
                 )
             )
 
+
             if not minuto_num:
                 continue
 
-            # ==============================================================
+
+            # ==========================================================
             # ESTATÍSTICAS
-            # ==============================================================
+            # ==========================================================
 
             stats = obter_estatisticas_sofascore(
                 event_id
             )
 
-            # ALL
-            cg_tot, cg_h, cg_a = extrair_stat_sofascore(
-                stats,
-                'Shots on target'
+
+            dados_estatisticos = (
+                extrair_dados_estatisticos(
+                    stats
+                )
             )
 
-            cf_tot, cf_h, cf_a = extrair_stat_sofascore(
-                stats,
-                'Shots off target'
-            )
 
-            esc_tot, esc_h, esc_a = extrair_stat_sofascore(
-                stats,
-                'Corner kicks'
-            )
-
-            xg_tot, xg_h, xg_a = extrair_xg_sofascore(
-                stats,
-                'ALL'
-            )
-
-            bc_tot, bc_h, bc_a = extrair_grandes_chances(
-                stats,
-                'ALL'
-            )
-
-            # --------------------------------------------------------------
-            # Período relevante
-            # --------------------------------------------------------------
-
-            periodo_relevante = '1ST' if eh_1h else '2ND'
-
-            xg_periodo, _, _ = extrair_xg_sofascore(
-                stats,
-                periodo_relevante
-            )
-
-            bc_periodo, _, _ = extrair_grandes_chances(
-                stats,
-                periodo_relevante
-            )
-
-            sot_periodo, _, _ = extrair_stat_periodo(
-                stats,
-                'Shots on target',
-                periodo_relevante
-            )
-
-            # --------------------------------------------------------------
-            # Conversões
-            # --------------------------------------------------------------
-
-            chutes_gol = int(cg_tot)
-
-            cg_h_int = int(cg_h)
-            cg_a_int = int(cg_a)
-
-            fin_tot = int(
-                cg_tot + cf_tot
-            )
-
-            fin_h_int = int(
-                cg_h + cf_h
-            )
-
-            fin_a_int = int(
-                cg_a + cf_a
-            )
-
-            escanteios = int(
-                esc_tot
-            )
-
-            esc_h_int = int(
-                esc_h
-            )
-
-            esc_a_int = int(
-                esc_a
-            )
-
-            grandes_chances = int(
-                bc_tot
-            )
-
-            # ==============================================================
+            # ==========================================================
             # PRESSÃO
-            # ==============================================================
+            # ==========================================================
 
-            pressao = obter_pressao_grafico_sofascore(
-                event_id
+            pressao_pico, pressao_media, pressao_texto = (
+                obter_pressao_grafico_sofascore(
+                    event_id
+                )
             )
 
-            pressao_score = calcular_score_pressao(
-                pressao
-            )
 
-            # ==============================================================
-            # CONTEXTO
-            # ==============================================================
+            # ==========================================================
+            # EQUILÍBRIO
+            # ==========================================================
 
-            contexto_05 = calcular_contexto_placar(
+            equilibrio = calcular_equilibrio(
+                dados_estatisticos,
                 gols_c,
-                gols_f,
-                minuto_num,
-                '05_HT'
+                gols_f
             )
 
-            contexto_15 = calcular_contexto_placar(
-                gols_c,
-                gols_f,
-                minuto_num,
-                '15_HT'
-            )
 
-            contexto_ft = calcular_contexto_placar(
-                gols_c,
-                gols_f,
-                minuto_num,
-                'LIMITE_FT'
-            )
-
-            # ==============================================================
-            # INTENSIDADE
-            # ==============================================================
-
-            intensidade = analisar_intensidade(
-                minuto_num,
-                fin_tot,
-                chutes_gol,
-                grandes_chances,
-                xg_tot,
-                escanteios
-            )
-
-            # ==============================================================
-            # SCORES
-            # ==============================================================
-
-            score_05 = score_over_05_ht(
-                minuto_num,
-                xg_tot,
-                fin_tot,
-                chutes_gol,
-                grandes_chances,
-                escanteios,
-                pressao_score,
-                contexto_05
-            )
-
-            score_15 = score_over_15_ht(
-                minuto_num,
-                xg_tot,
-                fin_tot,
-                chutes_gol,
-                grandes_chances,
-                escanteios,
-                pressao_score,
-                contexto_15
-            )
-
-            score_ft = score_limite_ft(
-                minuto_num,
-                xg_tot,
-                fin_tot,
-                chutes_gol,
-                grandes_chances,
-                escanteios,
-                pressao_score,
-                contexto_ft
-            )
-
-            # ==============================================================
-            # JOGO MORTO
-            # ==============================================================
-
-            jogo_sem_intensidade = jogo_morto(
-                minuto_num,
-                xg_tot,
-                fin_tot,
-                chutes_gol,
-                grandes_chances,
-                pressao_score
-            )
-
-            if jogo_sem_intensidade:
-
-                print(
-                    f"[{horario}] "
-                    f"{time_casa} x {time_fora} "
-                    f"→ jogo morto"
-                )
-
-                continue
-
-            # ==============================================================
-            # TEXTO ESTATÍSTICO
-            # ==============================================================
-
-            linha_xg = ""
-
-            if xg_tot > 0:
-
-                linha_xg = (
-                    f"📈 *xG:* `{xg_tot:.2f}` "
-                    f"_({time_casa} "
-                    f"{xg_h:.2f} | "
-                    f"{xg_a:.2f} "
-                    f"{time_fora})_\n"
-                )
-
-            linha_xg_periodo = ""
-
-            if xg_periodo > 0:
-
-                nome_periodo = (
-                    "1º tempo"
-                    if eh_1h
-                    else
-                    "2º tempo"
-                )
-
-                linha_xg_periodo = (
-                    f"📊 *xG {nome_periodo}:* "
-                    f"`{xg_periodo:.2f}`\n"
-                )
-
-            linha_pressao = (
-                f"🔥 *Pressão:* "
-                f"`{pressao_score}/100` "
-                f"({pressao['tendencia']})\n"
-            )
-
-            if pressao['aceleracao'] > 0:
-
-                linha_pressao += (
-                    f"📈 *Aceleração:* "
-                    f"`+{pressao['aceleracao']:.1f}`\n"
-                )
+            # ==========================================================
+            # BLOCO DE ESTATÍSTICAS
+            # ==========================================================
 
             bloco_estatisticas = (
-
-                f"{linha_xg}"
-
-                f"{linha_xg_periodo}"
-
-                f"🎯 *Finalizações:* "
-                f"`{fin_tot}` "
-                f"_({fin_h_int}x{fin_a_int})_\n"
-
-                f"🥅 *No alvo:* "
-                f"`{chutes_gol}` "
-                f"_({cg_h_int}x{cg_a_int})_\n"
-
-                f"💥 *Grandes chances:* "
-                f"`{grandes_chances}`\n"
-
-                f"🚩 *Escanteios:* "
-                f"`{escanteios}` "
-                f"_({esc_h_int}x{esc_a_int})_\n"
-
-                f"{linha_pressao}"
-
-                f"⚡ *Intensidade:* "
-                f"`{intensidade}/100`\n"
+                montar_bloco_estatisticas(
+                    dados_estatisticos,
+                    time_casa,
+                    time_fora,
+                    pressao_texto
+                )
             )
 
-            # ==============================================================
-            # 1 — OVER 0.5 HT
-            # ==============================================================
+
+            # ==========================================================
+            # 1. OVER 0.5 HT
+            #
+            # 0x0
+            # Janela: 15' até 25'
+            # ==========================================================
 
             if (
-                total_gols == 0 and
-                eh_1h and
-                15 <= minuto_num <= 35
+                total_gols == 0
+                and eh_1h
+                and 15 <= minuto_num <= 25
             ):
 
-                score_final = (
-                    int(score_05 * 0.70) +
-                    int(intensidade * 0.15) +
-                    int(pressao_score * 0.15)
-                )
 
-                score_final = limitar(
-                    score_final
-                )
+                if event_id not in notificados_05_ht:
 
-                if (
-                    score_final >= SCORE_ALERTA_FORTE and
-                    event_id not in notificados_05_ht
-                ):
 
-                    notificados_05_ht.add(
-                        event_id
+                    pontos, motivos = (
+                        pontuar_over_05_ht(
+                            minuto_num,
+                            dados_estatisticos,
+                            pressao_pico,
+                            pressao_media
+                        )
                     )
 
-                    houve_alerta = True
 
-                    classe = classificacao_score(
-                        score_final
+                    # Penalização para jogo extremamente
+                    # desequilibrado.
+
+                    if equilibrio > 0.70:
+                        pontos -= 2
+
+
+                    # Proteção contra pontuação negativa
+
+                    pontos = max(
+                        0,
+                        pontos
                     )
 
-                    mensagem = (
 
-                        f"🚨 *FARO DE BEAGLE — "
-                        f"OVER 0.5 HT* 🚨\n\n"
-
-                        f"🏆 *Liga:* "
-                        f"{liga_formatada}\n"
-
-                        f"⚽ *{time_casa} "
-                        f"{gols_c} x "
-                        f"{gols_f} "
-                        f"{time_fora}*\n"
-
-                        f"⏱️ *{minutagem}*\n\n"
-
-                        f"📊 *ANÁLISE AO VIVO*\n"
-
-                        f"{bloco_estatisticas}\n"
-
-                        f"🎯 *GOAL SCORE:* "
-                        f"`{score_final}/100` "
-                        f"{classe}\n"
-
-                        f"⭐ *Confiança:* "
-                        f"`{confianca_score(score_final)}/10`\n\n"
-
-                        f"🐶 *FARO:* "
-                        f"OVER 0.5 HT"
+                    classificacao = (
+                        classificar_pontuacao(
+                            pontos,
+                            '05_HT'
+                        )
                     )
 
-                    msg_id = enviar_alerta(
-                        mensagem
-                    )
 
-                    if msg_id:
+                    # --------------------------------------------------
+                    # Gatilho mínimo
+                    # --------------------------------------------------
 
-                        alertas_pendentes[
-                            f"{event_id}_05_HT"
-                        ] = {
+                    sinal_valido = False
 
-                            'event_id': event_id,
 
-                            'message_id': msg_id,
+                    if (
+                        pontos >= 9
+                        and (
+                            dados_estatisticos['xg'] >= 0.40
+                            or dados_estatisticos['sot'] >= 3
+                            or dados_estatisticos['big'] >= 1
+                        )
+                    ):
 
-                            'gols_alerta': total_gols,
+                        sinal_valido = True
 
-                            'mercado': '05_HT',
 
-                            'mensagem_original': mensagem
-                        }
+                    if sinal_valido:
 
-            # ==============================================================
-            # 2 — OVER 1.5 HT
-            # ==============================================================
+
+                        notificados_05_ht.add(
+                            event_id
+                        )
+
+
+                        motivos_txt = (
+                            " • ".join(
+                                motivos[:6]
+                            )
+                        )
+
+
+                        mensagem = (
+
+                            f"🚨 *FARO DE BEAGLE* 🚨\n"
+                            f"⚽ *OVER 0.5 HT*\n\n"
+
+                            f"🏆 *Liga:* "
+                            f"{liga_formatada}\n"
+
+                            f"⚽ *{time_casa} "
+                            f"{gols_c} x {gols_f} "
+                            f"{time_fora}*\n"
+
+                            f"⏱️ *Tempo:* "
+                            f"{minutagem}\n\n"
+
+                            f"📊 *ANÁLISE AO VIVO*\n"
+
+                            f"{bloco_estatisticas}\n"
+
+                            f"🧠 *Score:* "
+                            f"`{pontos}/20` "
+                            f"{classificacao}\n\n"
+
+                            f"🔎 *Indicadores:* "
+                            f"{motivos_txt}\n\n"
+
+                            f"💡 *Mercado:* "
+                            f"Over 0.5 HT"
+                        )
+
+
+                        msg_id = enviar_alerta(
+                            mensagem
+                        )
+
+
+                        if msg_id:
+
+                            alertas_pendentes[
+                                f"{event_id}_05_HT"
+                            ] = {
+
+                                'event_id':
+                                    event_id,
+
+                                'message_id':
+                                    msg_id,
+
+                                'gols_alerta':
+                                    total_gols,
+
+                                'mercado':
+                                    '05_HT',
+
+                                'mensagem_original':
+                                    mensagem
+                            }
+
+
+            # ==========================================================
+            # 2. OVER 1.5 HT
+            #
+            # 1x0 ou 0x1
+            # Janela: 18' até 28'
+            # ==========================================================
 
             elif (
-                total_gols == 1 and
-                eh_1h and
-                18 <= minuto_num <= 32
+                total_gols == 1
+                and eh_1h
+                and 18 <= minuto_num <= 28
             ):
 
-                # Aumenta importância do xG do período.
-                score_ajustado = score_15
 
-                if xg_periodo >= 0.80:
-                    score_ajustado += 6
+                if event_id not in notificados_15_ht:
 
-                if bc_periodo >= 2:
-                    score_ajustado += 5
 
-                if sot_periodo >= 4:
-                    score_ajustado += 4
-
-                score_final = (
-                    int(score_ajustado * 0.70) +
-                    int(intensidade * 0.12) +
-                    int(pressao_score * 0.18)
-                )
-
-                score_final = limitar(
-                    score_final
-                )
-
-                if (
-                    score_final >= SCORE_ALERTA_FORTE and
-                    event_id not in notificados_15_ht
-                ):
-
-                    notificados_15_ht.add(
-                        event_id
+                    pontos, motivos = (
+                        pontuar_over_15_ht(
+                            minuto_num,
+                            dados_estatisticos,
+                            pressao_pico,
+                            pressao_media
+                        )
                     )
 
-                    houve_alerta = True
 
-                    classe = classificacao_score(
-                        score_final
+                    # Se o jogo estiver extremamente
+                    # desequilibrado, reduzimos a pontuação.
+
+                    if equilibrio > 0.70:
+                        pontos -= 2
+
+
+                    pontos = max(
+                        0,
+                        pontos
                     )
 
-                    mensagem = (
 
-                        f"⚡ *FARO DE BEAGLE — "
-                        f"OVER 1.5 HT* ⚡\n\n"
-
-                        f"🏆 *Liga:* "
-                        f"{liga_formatada}\n"
-
-                        f"⚽ *{time_casa} "
-                        f"{gols_c} x "
-                        f"{gols_f} "
-                        f"{time_fora}*\n"
-
-                        f"⏱️ *{minutagem}*\n\n"
-
-                        f"📊 *ANÁLISE AO VIVO*\n"
-
-                        f"{bloco_estatisticas}\n"
-
-                        f"🎯 *GOAL SCORE:* "
-                        f"`{score_final}/100` "
-                        f"{classe}\n"
-
-                        f"⭐ *Confiança:* "
-                        f"`{confianca_score(score_final)}/10`\n\n"
-
-                        f"🐶 *FARO:* "
-                        f"OVER 1.5 HT — 2º GOL"
+                    classificacao = (
+                        classificar_pontuacao(
+                            pontos,
+                            '15_HT'
+                        )
                     )
 
-                    msg_id = enviar_alerta(
-                        mensagem
-                    )
 
-                    if msg_id:
+                    sinal_valido = False
 
-                        alertas_pendentes[
-                            f"{event_id}_15_HT"
-                        ] = {
 
-                            'event_id': event_id,
+                    # Gatilho mais exigente.
+                    # Afinal, precisamos do segundo gol
+                    # antes do intervalo.
 
-                            'message_id': msg_id,
+                    if (
+                        pontos >= 12
+                        and (
+                            dados_estatisticos['xg'] >= 0.80
+                            or dados_estatisticos['sot'] >= 4
+                            or dados_estatisticos['big'] >= 1
+                        )
+                    ):
 
-                            'gols_alerta': total_gols,
+                        sinal_valido = True
 
-                            'mercado': '15_HT',
 
-                            'mensagem_original': mensagem
-                        }
+                    if sinal_valido:
 
-            # ==============================================================
-            # 3 — GOL LIMITE FT
-            # ==============================================================
+
+                        notificados_15_ht.add(
+                            event_id
+                        )
+
+
+                        motivos_txt = (
+                            " • ".join(
+                                motivos[:6]
+                            )
+                        )
+
+
+                        mensagem = (
+
+                            f"⚡ *FARO DE BEAGLE* ⚡\n"
+                            f"⚽ *OVER 1.5 HT — 2º GOL*\n\n"
+
+                            f"🏆 *Liga:* "
+                            f"{liga_formatada}\n"
+
+                            f"⚽ *{time_casa} "
+                            f"{gols_c} x {gols_f} "
+                            f"{time_fora}*\n"
+
+                            f"⏱️ *Tempo:* "
+                            f"{minutagem}\n\n"
+
+                            f"📊 *ANÁLISE AO VIVO*\n"
+
+                            f"{bloco_estatisticas}\n"
+
+                            f"🧠 *Score:* "
+                            f"`{pontos}/24` "
+                            f"{classificacao}\n\n"
+
+                            f"🔎 *Indicadores:* "
+                            f"{motivos_txt}\n\n"
+
+                            f"💡 *Mercado:* "
+                            f"Over 1.5 HT"
+                        )
+
+
+                        msg_id = enviar_alerta(
+                            mensagem
+                        )
+
+
+                        if msg_id:
+
+                            alertas_pendentes[
+                                f"{event_id}_15_HT"
+                            ] = {
+
+                                'event_id':
+                                    event_id,
+
+                                'message_id':
+                                    msg_id,
+
+                                'gols_alerta':
+                                    total_gols,
+
+                                'mercado':
+                                    '15_HT',
+
+                                'mensagem_original':
+                                    mensagem
+                            }
+
+
+            # ==========================================================
+            # 3. GOL LIMITE FT
+            #
+            # Janela: 65' até 75'
+            #
+            # Regras:
+            # - diferença máxima de 1 gol
+            # - máximo 4 gols no jogo
+            # ==========================================================
 
             elif (
-                eh_2h and
-                65 <= minuto_num <= 82 and
-                total_gols <= 5
+                eh_2h
+                and abs(
+                    gols_c - gols_f
+                ) <= 1
+                and total_gols <= 4
+                and 65 <= minuto_num <= 75
             ):
 
-                score_final = score_ft
 
-                # Jogo empatado recebe pequeno bônus.
-                if gols_c == gols_f:
-                    score_final += 5
+                if event_id not in notificados_limite_ft:
 
-                # Diferença de apenas um gol:
-                elif abs(gols_c - gols_f) == 1:
-                    score_final += 3
 
-                # Reação ofensiva muito forte.
-                if (
-                    pressao['aceleracao'] >= 15 and
-                    grandes_chances >= 2
-                ):
-                    score_final += 5
-
-                score_final = limitar(
-                    score_final
-                )
-
-                if (
-                    score_final >= SCORE_ALERTA_FORTE and
-                    event_id not in notificados_limite_ft
-                ):
-
-                    notificados_limite_ft.add(
-                        event_id
+                    pontos, motivos = (
+                        pontuar_limite_ft(
+                            minuto_num,
+                            dados_estatisticos,
+                            pressao_pico,
+                            pressao_media
+                        )
                     )
 
-                    houve_alerta = True
 
-                    classe = classificacao_score(
-                        score_final
+                    # --------------------------------------------------
+                    # Penalização por placar
+                    # --------------------------------------------------
+
+                    if total_gols == 0:
+
+                        # 0x0 aos 70' exige muito mais
+                        # evidência de pressão.
+
+                        pontos -= 3
+
+                    elif total_gols >= 4:
+
+                        pontos -= 2
+
+
+                    # --------------------------------------------------
+                    # Jogo extremamente desequilibrado
+                    # --------------------------------------------------
+
+                    if equilibrio > 0.75:
+
+                        pontos -= 2
+
+
+                    pontos = max(
+                        0,
+                        pontos
                     )
+
+
+                    classificacao = (
+                        classificar_pontuacao(
+                            pontos,
+                            'LIMITE_FT'
+                        )
+                    )
+
+
+                    # --------------------------------------------------
+                    # Mercado do próximo gol
+                    # --------------------------------------------------
 
                     proximo_gol = (
                         total_gols + 0.5
                     )
 
-                    mensagem = (
 
-                        f"🎯 *FARO DE BEAGLE — "
-                        f"GOL LIMITE FT* 🎯\n\n"
+                    # --------------------------------------------------
+                    # Gatilho
+                    # --------------------------------------------------
 
-                        f"🏆 *Liga:* "
-                        f"{liga_formatada}\n"
+                    sinal_valido = False
 
-                        f"⚽ *{time_casa} "
-                        f"{gols_c} x "
-                        f"{gols_f} "
-                        f"{time_fora}*\n"
 
-                        f"⏱️ *{minutagem}*\n\n"
+                    if (
+                        pontos >= 14
+                        and (
+                            dados_estatisticos['xg'] >= 1.50
+                            or dados_estatisticos['sot'] >= 6
+                            or dados_estatisticos['big'] >= 2
+                        )
+                    ):
 
-                        f"📊 *ANÁLISE AO VIVO*\n"
+                        sinal_valido = True
 
-                        f"{bloco_estatisticas}\n"
 
-                        f"🎯 *GOAL SCORE:* "
-                        f"`{score_final}/100` "
-                        f"{classe}\n"
+                    if sinal_valido:
 
-                        f"⭐ *Confiança:* "
-                        f"`{confianca_score(score_final)}/10`\n\n"
 
-                        f"🐶 *FARO:* "
-                        f"OVER LIMITE "
-                        f"+{proximo_gol} FT"
-                    )
+                        notificados_limite_ft.add(
+                            event_id
+                        )
 
-                    msg_id = enviar_alerta(
-                        mensagem
-                    )
 
-                    if msg_id:
+                        motivos_txt = (
+                            " • ".join(
+                                motivos[:7]
+                            )
+                        )
 
-                        alertas_pendentes[
-                            f"{event_id}_LIMITE_FT"
-                        ] = {
 
-                            'event_id': event_id,
+                        mensagem = (
 
-                            'message_id': msg_id,
+                            f"🎯 *FARO DE BEAGLE* 🎯\n"
+                            f"⚽ *GOL LIMITE FT*\n\n"
 
-                            'gols_alerta': total_gols,
+                            f"🏆 *Liga:* "
+                            f"{liga_formatada}\n"
 
-                            'mercado': 'LIMITE_FT',
+                            f"⚽ *{time_casa} "
+                            f"{gols_c} x {gols_f} "
+                            f"{time_fora}*\n"
 
-                            'mensagem_original': mensagem
-                        }
+                            f"⏱️ *Tempo:* "
+                            f"{minutagem}\n\n"
 
-        return houve_alerta
+                            f"🎯 *Próxima linha:* "
+                            f"Over {proximo_gol}\n\n"
+
+                            f"📊 *ANÁLISE AO VIVO*\n"
+
+                            f"{bloco_estatisticas}\n"
+
+                            f"🧠 *Score:* "
+                            f"`{pontos}/25` "
+                            f"{classificacao}\n\n"
+
+                            f"🔎 *Indicadores:* "
+                            f"{motivos_txt}\n\n"
+
+                            f"💡 *Mercado:* "
+                            f"Próximo gol / "
+                            f"Over limite FT"
+                        )
+
+
+                        msg_id = enviar_alerta(
+                            mensagem
+                        )
+
+
+                        if msg_id:
+
+                            alertas_pendentes[
+                                f"{event_id}_LIMITE_FT"
+                            ] = {
+
+                                'event_id':
+                                    event_id,
+
+                                'message_id':
+                                    msg_id,
+
+                                'gols_alerta':
+                                    total_gols,
+
+                                'mercado':
+                                    'LIMITE_FT',
+
+                                'mensagem_original':
+                                    mensagem
+                            }
+
 
     except Exception as e:
 
         print(
-            f"Erro na consulta: {e}"
+            f"Erro na consulta principal: {e}"
         )
-
-        return False
 
 
 # ==============================================================================
-# EXECUÇÃO
+# INICIALIZAÇÃO
 # ==============================================================================
 
 if __name__ == '__main__':
+
 
     horario_inicio = (
         obter_horario_brasil()
         .strftime('%H:%M:%S')
     )
 
+
     print(
         f"[{horario_inicio}] "
-        f"Faro de Beagle V2 iniciado."
+        f"========================================"
     )
 
     print(
-        "🐶 Motor: Goal Score + "
-        "Pressão + Contexto + Intensidade"
+        f"[{horario_inicio}] "
+        f"FARO DE BEAGLE INICIADO"
     )
+
+    print(
+        f"[{horario_inicio}] "
+        f"Mercados: Over 0.5 HT | "
+        f"Over 1.5 HT | Gol Limite FT"
+    )
+
+    print(
+        f"[{horario_inicio}] "
+        f"Intervalo: "
+        f"{INTERVALO_CONSULTA}s"
+    )
+
+    print(
+        f"[{horario_inicio}] "
+        f"Horário: "
+        f"{HORA_INICIO:02d}:00 até 00:00"
+    )
+
+    print(
+        f"[{horario_inicio}] "
+        f"========================================"
+    )
+
 
     while True:
 
@@ -1900,25 +2599,19 @@ if __name__ == '__main__':
                 obter_horario_brasil()
             )
 
-            hora_atual = agora_br.hour
+            hora_atual = (
+                agora_br.hour
+            )
 
-            if 8 <= hora_atual < 24:
 
-                houve_alerta = (
-                    checar_jogos_ao_vivo()
-                )
+            if (
+                HORA_INICIO
+                <= hora_atual
+                < HORA_FIM
+            ):
 
-                if houve_alerta:
+                checar_jogos_ao_vivo()
 
-                    time.sleep(
-                        INTERVALO_ALERTA
-                    )
-
-                else:
-
-                    time.sleep(
-                        INTERVALO_NORMAL
-                    )
 
             else:
 
@@ -1929,12 +2622,11 @@ if __name__ == '__main__':
 
                 print(
                     f"[{horario_formatado}] "
-                    f"Bot em repouso "
-                    f"fora do horário "
+                    f"Bot em repouso fora "
+                    f"do horário "
                     f"(08h às 00h)."
                 )
 
-                time.sleep(240)
 
         except Exception as e:
 
@@ -1942,6 +2634,7 @@ if __name__ == '__main__':
                 f"Aviso no ciclo principal: {e}"
             )
 
-            time.sleep(60)
 
-
+        time.sleep(
+            INTERVALO_CONSULTA
+    )

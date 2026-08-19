@@ -325,13 +325,86 @@ def checar_jogos_ao_vivo():
                 f"{linha_prelive}"
             )
 
-            # 1. OVER 0.5 HT (0x0) -> 15' a 25' do 1º Tempo
+            # ==================================================================
+            # 1. OVER 0.5 HT (0x0) -> 15' a 25' do 1º TEMPO
+            # FILTRO SUBSTITUÍDO
+            # ==================================================================
             if total_gols == 0 and eh_1h:
                 if event_id not in notificados_05_ht and 15 <= minuto_num <= 25:
-                    tem_xg_valido = (xg_tot >= 0.45) if xg_tot > 0 else (chutes_gol >= 2 or fin_tot >= 6)
-                    
-                    if tem_xg_valido and fluxo_confirmado:
+
+                    # ----------------------------------------------------------
+                    # FILTRO +0,5 HT
+                    #
+                    # Prioridade:
+                    # 1) xG
+                    # 2) Chutes no alvo
+                    # 3) Finalizações
+                    # 4) Escanteios
+                    # 5) Pressão
+                    #
+                    # Não basta apenas uma estatística isolada.
+                    # ----------------------------------------------------------
+
+                    if xg_tot > 0:
+
+                        # Cenário com xG disponível
+                        filtro_05_ht = (
+                            xg_tot >= 0.45
+                            and (
+                                chutes_gol >= 2
+                                or fin_tot >= 7
+                            )
+                            and (
+                                pico_pressao >= 30
+                                or chutes_gol >= 3
+                                or fin_tot >= 9
+                                or escanteios >= 4
+                            )
+                        )
+
+                        # Reforço para xG muito alto
+                        if xg_tot >= 0.65:
+                            filtro_05_ht = (
+                                (
+                                    chutes_gol >= 2
+                                    and fin_tot >= 6
+                                )
+                                or (
+                                    chutes_gol >= 3
+                                )
+                                or (
+                                    fin_tot >= 9
+                                    and escanteios >= 3
+                                )
+                            )
+
+                    else:
+
+                        # Cenário sem xG disponível
+                        filtro_05_ht = (
+                            (
+                                chutes_gol >= 3
+                                and fin_tot >= 7
+                            )
+                            or (
+                                chutes_gol >= 2
+                                and fin_tot >= 9
+                                and escanteios >= 3
+                            )
+                        )
+
+                        if pico_pressao >= 35:
+                            filtro_05_ht = (
+                                filtro_05_ht
+                                and (
+                                    chutes_gol >= 2
+                                    or fin_tot >= 8
+                                )
+                            )
+
+                    if filtro_05_ht:
                         notificados_05_ht.add(event_id)
+
                         mensagem = (
                             f"🚨 *FARO DE BEAGLE: OVER 0.5 HT (0x0)* 🚨\n\n"
                             f"🏆 *Liga:* {liga_formatada}\n"
@@ -341,7 +414,9 @@ def checar_jogos_ao_vivo():
                             f"{bloco_estatisticas}\n"
                             f"💡 Confira a linha de **Over 0.5 HT**!"
                         )
+
                         msg_id = enviar_alerta(mensagem)
+
                         if msg_id:
                             alertas_pendentes[f"{event_id}_05_HT"] = {
                                 'event_id': event_id,
@@ -351,13 +426,79 @@ def checar_jogos_ao_vivo():
                                 'mensagem_original': mensagem
                             }
 
-            # 2. OVER 1.5 HT (1x0 / 0x1) -> 18' a 28' do 1º Tempo
+            # ==================================================================
+            # 2. OVER 1.5 HT (1x0 / 0x1) -> 18' a 28' DO 1º TEMPO
+            # FILTRO SUBSTITUÍDO
+            # ==================================================================
             elif total_gols == 1 and eh_1h:
                 if event_id not in notificados_15_ht and 18 <= minuto_num <= 28:
-                    tem_xg_valido = (xg_tot >= 0.80) if xg_tot > 0 else (chutes_gol >= 2 and fin_tot >= 5)
-                    
-                    if tem_xg_valido and fluxo_confirmado:
+
+                    # ----------------------------------------------------------
+                    # FILTRO +1,5 HT
+                    #
+                    # Como já existe um gol, exigimos uma produção ofensiva
+                    # superior à necessária para o +0,5 HT.
+                    # ----------------------------------------------------------
+
+                    if xg_tot > 0:
+
+                        filtro_15_ht = (
+                            xg_tot >= 0.80
+                            and (
+                                chutes_gol >= 2
+                                or fin_tot >= 7
+                            )
+                            and (
+                                pico_pressao >= 30
+                                or chutes_gol >= 3
+                                or fin_tot >= 9
+                                or escanteios >= 4
+                            )
+                        )
+
+                        # Quando o xG está realmente forte,
+                        # permite combinação alternativa.
+                        if xg_tot >= 1.05:
+                            filtro_15_ht = (
+                                (
+                                    chutes_gol >= 2
+                                    and fin_tot >= 6
+                                )
+                                or (
+                                    chutes_gol >= 3
+                                )
+                                or (
+                                    fin_tot >= 9
+                                    and escanteios >= 3
+                                )
+                            )
+
+                    else:
+
+                        filtro_15_ht = (
+                            (
+                                chutes_gol >= 3
+                                and fin_tot >= 7
+                            )
+                            or (
+                                chutes_gol >= 2
+                                and fin_tot >= 9
+                                and escanteios >= 3
+                            )
+                        )
+
+                        if pico_pressao >= 35:
+                            filtro_15_ht = (
+                                filtro_15_ht
+                                and (
+                                    chutes_gol >= 2
+                                    or fin_tot >= 8
+                                )
+                            )
+
+                    if filtro_15_ht:
                         notificados_15_ht.add(event_id)
+
                         mensagem = (
                             f"⚡ *FARO DE BEAGLE: OVER 1.5 HT (2º GOL)* ⚡\n\n"
                             f"🏆 *Liga:* {liga_formatada}\n"
@@ -367,7 +508,9 @@ def checar_jogos_ao_vivo():
                             f"{bloco_estatisticas}\n"
                             f"💡 Confira a linha de **Over 1.5 HT**!"
                         )
+
                         msg_id = enviar_alerta(mensagem)
+
                         if msg_id:
                             alertas_pendentes[f"{event_id}_15_HT"] = {
                                 'event_id': event_id,
@@ -377,14 +520,81 @@ def checar_jogos_ao_vivo():
                                 'mensagem_original': mensagem
                             }
 
-            # 3. OVER LIMITE FT -> 65' a 75' do 2º Tempo
+            # ==================================================================
+            # 3. OVER LIMITE FT -> 65' a 75' DO 2º TEMPO
+            # FILTRO SUBSTITUÍDO
+            # ==================================================================
             elif eh_2h and abs(gols_c - gols_f) <= 1 and total_gols <= 4:
                 if event_id not in notificados_limite_ft and 65 <= minuto_num <= 75:
-                    tem_xg_valido = (xg_tot >= 1.20) if xg_tot > 0 else (chutes_gol >= 3 and fin_tot >= 8)
-                    
-                    if tem_xg_valido and fluxo_confirmado:
+
+                    # ----------------------------------------------------------
+                    # FILTRO LIMITE FT
+                    #
+                    # O objetivo é encontrar partidas em que ainda existe
+                    # intensidade suficiente para um gol, sem depender somente
+                    # do xG.
+                    # ----------------------------------------------------------
+
+                    if xg_tot > 0:
+
+                        filtro_limite_ft = (
+                            xg_tot >= 1.20
+                            and (
+                                chutes_gol >= 3
+                                or fin_tot >= 10
+                            )
+                            and (
+                                pico_pressao >= 30
+                                or chutes_gol >= 4
+                                or fin_tot >= 13
+                                or escanteios >= 6
+                            )
+                        )
+
+                        # xG muito forte permite uma combinação mais agressiva.
+                        if xg_tot >= 1.70:
+                            filtro_limite_ft = (
+                                (
+                                    chutes_gol >= 3
+                                    and fin_tot >= 9
+                                )
+                                or (
+                                    chutes_gol >= 4
+                                )
+                                or (
+                                    fin_tot >= 12
+                                    and escanteios >= 5
+                                )
+                            )
+
+                    else:
+
+                        filtro_limite_ft = (
+                            (
+                                chutes_gol >= 4
+                                and fin_tot >= 10
+                            )
+                            or (
+                                chutes_gol >= 3
+                                and fin_tot >= 13
+                                and escanteios >= 5
+                            )
+                        )
+
+                        if pico_pressao >= 40:
+                            filtro_limite_ft = (
+                                filtro_limite_ft
+                                and (
+                                    chutes_gol >= 3
+                                    or fin_tot >= 11
+                                )
+                            )
+
+                    if filtro_limite_ft:
                         notificados_limite_ft.add(event_id)
+
                         proximo_gol = total_gols + 0.5
+
                         mensagem = (
                             f"🎯 *FARO DE BEAGLE: OVER LIMITE FT (+{proximo_gol})* 🎯\n\n"
                             f"🏆 *Liga:* {liga_formatada}\n"
@@ -394,7 +604,9 @@ def checar_jogos_ao_vivo():
                             f"{bloco_estatisticas}\n"
                             f"💡 Confira a linha de **Over Limite (+{proximo_gol})**!"
                         )
+
                         msg_id = enviar_alerta(mensagem)
+
                         if msg_id:
                             alertas_pendentes[f"{event_id}_LIMITE_FT"] = {
                                 'event_id': event_id,

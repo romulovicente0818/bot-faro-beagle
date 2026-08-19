@@ -33,10 +33,14 @@ scraper = cloudscraper.create_scraper(
     }
 )
 
-# Controle de envio independente por estratégia
+# Registros para evitar repetição do mesmo alerta
 notificados_05_ht = set()
 notificados_15_ht = set()
 notificados_limite_ft = set()
+
+# Dicionário de acompanhamento dos alertas enviados para validação do resultado
+# Estrutura: { event_id_tipo: {'message_id': int, 'gols_alerta': int, 'mercado': str, 'mensagem_original': str} }
+alertas_pendentes = {}
 
 def obter_horario_brasil():
     fuso_br = zoneinfo.ZoneInfo('America/Sao_Paulo')
@@ -50,9 +54,26 @@ def enviar_alerta(mensagem):
         "parse_mode": "Markdown"
     }
     try:
-        scraper.post(url, json=payload, timeout=10)
+        res = scraper.post(url, json=payload, timeout=10)
+        if res.status_code == 200:
+            dados = res.json()
+            return dados.get('result', {}).get('message_id')
     except Exception as e:
         print(f"Erro ao enviar Telegram: {e}")
+    return None
+
+def editar_alerta(message_id, nova_mensagem):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+    payload = {
+        "chat_id": CHAT_ID,
+        "message_id": message_id,
+        "text": nova_mensagem,
+        "parse_mode": "Markdown"
+    }
+    try:
+        scraper.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"Erro ao editar mensagem Telegram: {e}")
 
 def obter_estatisticas_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
@@ -65,21 +86,16 @@ def obter_estatisticas_sofascore(event_id):
     return []
 
 def obter_prelive_sofascore(event_id):
-    """Consulta dados pré-live e médias recentes dos times no Sofascore."""
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/prematch-form"
     try:
         res = scraper.get(url, timeout=10)
         if res.status_code == 200:
-            dados = res.json()
-            home_form = dados.get('home', {}).get('avgRating', 0)
-            # Retorna estrutura pré-live identificada
-            return dados
+            return res.json()
     except Exception:
         pass
     return None
 
 def obter_pressao_grafico_sofascore(event_id):
-    """Lê o gráfico de Fluxo da Partida (Attack Momentum) dos últimos minutos."""
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/graph"
     try:
         res = scraper.get(url, timeout=10)
@@ -161,6 +177,53 @@ def extrair_minutagem_e_numero(item, eh_1h, eh_2h):
 
     return None, None
 
+def validar_alertas_enviados(jogos_dict):
+    """Verifica o placar e edita a mensagem no Telegram com ✅ ou ❌."""
+    chaves_para_remover = []
+
+    for chave_alerta, info in list(alertas_pendentes.items()):
+        event_id = info['event_id']
+        message_id = info['message_id']
+        gols_no_alerta = info['gols_alerta']
+        mercado = info['mercado']
+        msg_original = info['mensagem_original']
+
+        item_jogo = jogos_dict.get(event_id)
+        if not item_jogo:
+            continue
+
+        gols_c = item_jogo.get('homeScore', {}).get('current', 0)
+        gols_f = item_jogo.get('awayScore', {}).get('current', 0)
+        gols_atuais = gols_c + gols_f
+
+        status_desc = str(item_jogo.get('status', {}).get('description', '')).lower()
+        time_status = str(item_jogo.get('status', {}).get('type', '')).lower()
+
+        eh_ht = '1st' in status_desc or time_status == '1st'
+        eh_intervalo = 'halftime' in status_desc or 'ht' in status_desc or time_status == 'halftime'
+        eh_2h = '2nd' in status_desc or time_status == '2nd'
+        eh_finalizado = time_status == 'finished' or 'ended' in status_desc or 'ft' in status_desc
+
+        # 1. VERIFICAÇÃO DE GREEN (Saiu gol extra)
+        if gols_atuais > gols_no_alerta:
+            nova_mensagem = f"✅ *GREEN! GOL CONFIRMADO!* ✅\n\n{msg_original}\n\n⚽ *Placar Atualizado:* {gols_c} x {gols_f}"
+            editar_alerta(message_id, nova_mensagem)
+            chaves_para_remover.append(chave_alerta)
+
+        # 2. VERIFICAÇÃO DE RED (O tempo da aposta acabou sem gol)
+        else:
+            if mercado in ['05_HT', '15_HT'] and (eh_intervalo or eh_2h or eh_finalizado):
+                nova_mensagem = f"❌ *RED* ❌\n\n{msg_original}"
+                editar_alerta(message_id, nova_mensagem)
+                chaves_para_remover.append(chave_alerta)
+            elif mercado == 'LIMITE_FT' and eh_finalizado:
+                nova_mensagem = f"❌ *RED* ❌\n\n{msg_original}"
+                editar_alerta(message_id, nova_mensagem)
+                chaves_para_remover.append(chave_alerta)
+
+    for ch in chaves_para_remover:
+        alertas_pendentes.pop(ch, None)
+
 def checar_jogos_ao_vivo():
     horario = obter_horario_brasil().strftime('%H:%M:%S')
     print(f"[{horario}] Faro de Beagle buscando partidas no Sofascore...")
@@ -176,6 +239,11 @@ def checar_jogos_ao_vivo():
         dados = response.json()
         jogos = dados.get('events', [])
         print(f"[{horario}] Total de partidas ao vivo localizadas: {len(jogos)}")
+
+        jogos_dict = {str(item.get('id', '')).strip(): item for item in jogos if item.get('id')}
+
+        # Primeiro valida e edita os alertas que já foram enviados anteriormente
+        validar_alertas_enviados(jogos_dict)
 
         for item in jogos:
             event_id = str(item.get('id', '')).strip()
@@ -225,21 +293,16 @@ def checar_jogos_ao_vivo():
             esc_tot, _, _ = extrair_stat_sofascore(stats, 'Corner kicks')
             escanteios = int(esc_tot)
 
-            # 1. Leitura do xG (Expected Goals)
             xg_tot, xg_h, xg_a = extrair_xg_sofascore(stats)
             linha_xg = f"\n📈 *xG Acumulado:* `{xg_tot:.2f}` _({time_casa} {xg_h:.2f} | {xg_a:.2f} {time_fora})_" if xg_tot > 0 else ""
 
-            # 2. Leitura do Fluxo da Partida (Attack Momentum)
             pico_pressao, linha_fluxo = obter_pressao_grafico_sofascore(event_id)
             fluxo_confirmado = (pico_pressao >= 30) if pico_pressao > 0 else True
 
-            # 3. Análise Pré-Live da Partida
             prelive_dados = obter_prelive_sofascore(event_id)
             linha_prelive = "\n📋 *Tendência Pré-Live:* Propenso a Gols ✅" if prelive_dados else ""
 
-            # ==================================================================
             # 1. OVER 0.5 HT (0x0) -> 15' a 25' do 1º Tempo
-            # ==================================================================
             if total_gols == 0 and eh_1h:
                 if event_id not in notificados_05_ht and 15 <= minuto_num <= 25:
                     tem_xg_valido = (xg_tot >= 0.45) if xg_tot > 0 else (chutes_gol >= 2 or finalizacoes >= 6)
@@ -257,11 +320,17 @@ def checar_jogos_ao_vivo():
                             f"🚩 *Escanteios:* `{escanteios}`\n\n"
                             f"💡 Confira a linha de **Over 0.5 HT**!"
                         )
-                        enviar_alerta(mensagem)
+                        msg_id = enviar_alerta(mensagem)
+                        if msg_id:
+                            alertas_pendentes[f"{event_id}_05_HT"] = {
+                                'event_id': event_id,
+                                'message_id': msg_id,
+                                'gols_alerta': total_gols,
+                                'mercado': '05_HT',
+                                'mensagem_original': mensagem
+                            }
 
-            # ==================================================================
             # 2. OVER 1.5 HT (1x0 / 0x1) -> 18' a 28' do 1º Tempo
-            # ==================================================================
             elif total_gols == 1 and eh_1h:
                 if event_id not in notificados_15_ht and 18 <= minuto_num <= 28:
                     tem_xg_valido = (xg_tot >= 0.80) if xg_tot > 0 else (chutes_gol >= 2 and finalizacoes >= 5)
@@ -278,11 +347,17 @@ def checar_jogos_ao_vivo():
                             f"👞 *Finalizações Totais:* `{finalizacoes}`{linha_xg}{linha_fluxo}{linha_prelive}\n\n"
                             f"💡 Confira a linha de **Over 1.5 HT**!"
                         )
-                        enviar_alerta(mensagem)
+                        msg_id = enviar_alerta(mensagem)
+                        if msg_id:
+                            alertas_pendentes[f"{event_id}_15_HT"] = {
+                                'event_id': event_id,
+                                'message_id': msg_id,
+                                'gols_alerta': total_gols,
+                                'mercado': '15_HT',
+                                'mensagem_original': mensagem
+                            }
 
-            # ==================================================================
             # 3. OVER LIMITE FT -> 65' a 75' do 2º Tempo
-            # ==================================================================
             elif eh_2h and abs(gols_c - gols_f) <= 1 and total_gols <= 4:
                 if event_id not in notificados_limite_ft and 65 <= minuto_num <= 75:
                     tem_xg_valido = (xg_tot >= 1.20) if xg_tot > 0 else (chutes_gol >= 3 and finalizacoes >= 8)
@@ -301,14 +376,22 @@ def checar_jogos_ao_vivo():
                             f"🚩 *Escanteios:* `{escanteios}`\n\n"
                             f"💡 Confira a linha de **Over Limite (+{proximo_gol})**!"
                         )
-                        enviar_alerta(mensagem)
+                        msg_id = enviar_alerta(mensagem)
+                        if msg_id:
+                            alertas_pendentes[f"{event_id}_LIMITE_FT"] = {
+                                'event_id': event_id,
+                                'message_id': msg_id,
+                                'gols_alerta': total_gols,
+                                'mercado': 'LIMITE_FT',
+                                'mensagem_original': mensagem
+                            }
 
     except Exception as e:
         print(f"Erro na consulta: {e}")
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando com analise Pré-Live + xG + Fluxo...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando com marcacao de GREEN (✅) e RED (❌)...")
 
     while True:
         try:

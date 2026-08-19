@@ -39,7 +39,6 @@ notificados_15_ht = set()
 notificados_limite_ft = set()
 
 # Dicionário de acompanhamento dos alertas enviados para validação do resultado
-# Estrutura: { event_id_tipo: {'message_id': int, 'gols_alerta': int, 'mercado': str, 'mensagem_original': str} }
 alertas_pendentes = {}
 
 def obter_horario_brasil():
@@ -110,13 +109,14 @@ def obter_pressao_grafico_sofascore(event_id):
             pico_pressao = max(valores_abs) if valores_abs else 0
             media_pressao = round(sum(valores_abs) / len(valores_abs), 1) if valores_abs else 0
             
-            texto_fluxo = f"\n🔥 *Pressão no Grafico:* Pico `{pico_pressao}` | Média `{media_pressao}`"
+            texto_fluxo = f"🔥 *Pressão no Grafico:* Pico `{pico_pressao}` | Média `{media_pressao}`\n"
             return pico_pressao, texto_fluxo
     except Exception:
         pass
     return 0, ""
 
 def extrair_stat_sofascore(stats_data, item_name):
+    """Extrai estatística retornando: Total, Casa, Fora."""
     if not stats_data:
         return 0, 0, 0
 
@@ -199,18 +199,15 @@ def validar_alertas_enviados(jogos_dict):
         status_desc = str(item_jogo.get('status', {}).get('description', '')).lower()
         time_status = str(item_jogo.get('status', {}).get('type', '')).lower()
 
-        eh_ht = '1st' in status_desc or time_status == '1st'
         eh_intervalo = 'halftime' in status_desc or 'ht' in status_desc or time_status == 'halftime'
         eh_2h = '2nd' in status_desc or time_status == '2nd'
         eh_finalizado = time_status == 'finished' or 'ended' in status_desc or 'ft' in status_desc
 
-        # 1. VERIFICAÇÃO DE GREEN (Saiu gol extra)
         if gols_atuais > gols_no_alerta:
             nova_mensagem = f"✅ *GREEN! GOL CONFIRMADO!* ✅\n\n{msg_original}\n\n⚽ *Placar Atualizado:* {gols_c} x {gols_f}"
             editar_alerta(message_id, nova_mensagem)
             chaves_para_remover.append(chave_alerta)
 
-        # 2. VERIFICAÇÃO DE RED (O tempo da aposta acabou sem gol)
         else:
             if mercado in ['05_HT', '15_HT'] and (eh_intervalo or eh_2h or eh_finalizado):
                 nova_mensagem = f"❌ *RED* ❌\n\n{msg_original}"
@@ -242,7 +239,6 @@ def checar_jogos_ao_vivo():
 
         jogos_dict = {str(item.get('id', '')).strip(): item for item in jogos if item.get('id')}
 
-        # Primeiro valida e edita os alertas que já foram enviados anteriormente
         validar_alertas_enviados(jogos_dict)
 
         for item in jogos:
@@ -284,28 +280,46 @@ def checar_jogos_ao_vivo():
 
             stats = obter_estatisticas_sofascore(event_id)
             
-            chutes_gol_tot, _, _ = extrair_stat_sofascore(stats, 'Shots on target')
-            chutes_fora_tot, _, _ = extrair_stat_sofascore(stats, 'Shots off target')
-            
-            chutes_gol = int(chutes_gol_tot)
-            finalizacoes = int(chutes_gol_tot + chutes_fora_tot)
-            
-            esc_tot, _, _ = extrair_stat_sofascore(stats, 'Corner kicks')
+            # Extração discriminada (Total, Casa, Fora)
+            cg_tot, cg_h, cg_a = extrair_stat_sofascore(stats, 'Shots on target')
+            cf_tot, cf_h, cf_a = extrair_stat_sofascore(stats, 'Shots off target')
+            esc_tot, esc_h, esc_a = extrair_stat_sofascore(stats, 'Corner kicks')
+
+            chutes_gol = int(cg_tot)
+            cg_h_int, cg_a_int = int(cg_h), int(cg_a)
+
+            fin_tot = int(cg_tot + cf_tot)
+            fin_h_int, fin_a_int = int(cg_h + cf_h), int(cg_a + cf_a)
+
             escanteios = int(esc_tot)
+            esc_h_int, esc_a_int = int(esc_h), int(esc_a)
 
+            # 1. Expected Goals (xG)
             xg_tot, xg_h, xg_a = extrair_xg_sofascore(stats)
-            linha_xg = f"\n📈 *xG Acumulado:* `{xg_tot:.2f}` _({time_casa} {xg_h:.2f} | {xg_a:.2f} {time_fora})_" if xg_tot > 0 else ""
+            linha_xg = f"📈 *xG Acumulado:* `{xg_tot:.2f}` _({time_casa} {xg_h:.2f} | {xg_a:.2f} {time_fora})_\n" if xg_tot > 0 else ""
 
+            # 2. Fluxo da Partida (Attack Momentum)
             pico_pressao, linha_fluxo = obter_pressao_grafico_sofascore(event_id)
             fluxo_confirmado = (pico_pressao >= 30) if pico_pressao > 0 else True
 
+            # 3. Tendência Pré-Live
             prelive_dados = obter_prelive_sofascore(event_id)
-            linha_prelive = "\n📋 *Tendência Pré-Live:* Propenso a Gols ✅" if prelive_dados else ""
+            linha_prelive = "📋 *Tendência Pré-Live:* Propenso a Gols ✅\n" if prelive_dados else ""
+
+            # Bloco de Estatísticas Ordenado Conforme Solicitado
+            bloco_estatisticas = (
+                f"{linha_xg}"
+                f"{linha_fluxo}"
+                f"👞 *Finalizações Totais:* `{fin_tot}` _({fin_h_int}x{fin_a_int})_\n"
+                f"🎯 *Chutes no Gol:* `{chutes_gol}` _({cg_h_int}x{cg_a_int})_\n"
+                f"🚩 *Escanteios:* `{escanteios}` _({esc_h_int}x{esc_a_int})_\n"
+                f"{linha_prelive}"
+            )
 
             # 1. OVER 0.5 HT (0x0) -> 15' a 25' do 1º Tempo
             if total_gols == 0 and eh_1h:
                 if event_id not in notificados_05_ht and 15 <= minuto_num <= 25:
-                    tem_xg_valido = (xg_tot >= 0.45) if xg_tot > 0 else (chutes_gol >= 2 or finalizacoes >= 6)
+                    tem_xg_valido = (xg_tot >= 0.45) if xg_tot > 0 else (chutes_gol >= 2 or fin_tot >= 6)
                     
                     if tem_xg_valido and fluxo_confirmado:
                         notificados_05_ht.add(event_id)
@@ -315,9 +329,7 @@ def checar_jogos_ao_vivo():
                             f"⚽ *{time_casa} 0 x 0 {time_fora}*\n"
                             f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
                             f"📊 *Estatísticas em Tempo Real:*\n"
-                            f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
-                            f"👞 *Finalizações Totais:* `{finalizacoes}`{linha_xg}{linha_fluxo}{linha_prelive}\n"
-                            f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                            f"{bloco_estatisticas}\n"
                             f"💡 Confira a linha de **Over 0.5 HT**!"
                         )
                         msg_id = enviar_alerta(mensagem)
@@ -333,7 +345,7 @@ def checar_jogos_ao_vivo():
             # 2. OVER 1.5 HT (1x0 / 0x1) -> 18' a 28' do 1º Tempo
             elif total_gols == 1 and eh_1h:
                 if event_id not in notificados_15_ht and 18 <= minuto_num <= 28:
-                    tem_xg_valido = (xg_tot >= 0.80) if xg_tot > 0 else (chutes_gol >= 2 and finalizacoes >= 5)
+                    tem_xg_valido = (xg_tot >= 0.80) if xg_tot > 0 else (chutes_gol >= 2 and fin_tot >= 5)
                     
                     if tem_xg_valido and fluxo_confirmado:
                         notificados_15_ht.add(event_id)
@@ -343,8 +355,7 @@ def checar_jogos_ao_vivo():
                             f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
                             f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
                             f"📊 *Estatísticas em Tempo Real:*\n"
-                            f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
-                            f"👞 *Finalizações Totais:* `{finalizacoes}`{linha_xg}{linha_fluxo}{linha_prelive}\n\n"
+                            f"{bloco_estatisticas}\n"
                             f"💡 Confira a linha de **Over 1.5 HT**!"
                         )
                         msg_id = enviar_alerta(mensagem)
@@ -360,7 +371,7 @@ def checar_jogos_ao_vivo():
             # 3. OVER LIMITE FT -> 65' a 75' do 2º Tempo
             elif eh_2h and abs(gols_c - gols_f) <= 1 and total_gols <= 4:
                 if event_id not in notificados_limite_ft and 65 <= minuto_num <= 75:
-                    tem_xg_valido = (xg_tot >= 1.20) if xg_tot > 0 else (chutes_gol >= 3 and finalizacoes >= 8)
+                    tem_xg_valido = (xg_tot >= 1.20) if xg_tot > 0 else (chutes_gol >= 3 and fin_tot >= 8)
                     
                     if tem_xg_valido and fluxo_confirmado:
                         notificados_limite_ft.add(event_id)
@@ -371,9 +382,7 @@ def checar_jogos_ao_vivo():
                             f"⚽ *{time_casa} {gols_c} x {gols_f} {time_fora}*\n"
                             f"⏱️ Tempo de Jogo: *{minutagem}*\n\n"
                             f"📊 *Estatísticas em Tempo Real:*\n"
-                            f"🎯 *Chutes no Gol:* `{chutes_gol}`\n"
-                            f"👞 *Finalizações Totais:* `{finalizacoes}`{linha_xg}{linha_fluxo}{linha_prelive}\n"
-                            f"🚩 *Escanteios:* `{escanteios}`\n\n"
+                            f"{bloco_estatisticas}\n"
                             f"💡 Confira a linha de **Over Limite (+{proximo_gol})**!"
                         )
                         msg_id = enviar_alerta(mensagem)
@@ -391,7 +400,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando com marcacao de GREEN (✅) e RED (❌)...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando com estatisticas discriminadas...")
 
     while True:
         try:

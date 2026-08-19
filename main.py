@@ -116,7 +116,6 @@ def obter_pressao_grafico_sofascore(event_id):
     return 0, ""
 
 def extrair_stat_sofascore(stats_data, item_name):
-    """Extrai estatística retornando: Total, Casa, Fora."""
     if not stats_data:
         return 0, 0, 0
 
@@ -178,7 +177,7 @@ def extrair_minutagem_e_numero(item, eh_1h, eh_2h):
     return None, None
 
 def validar_alertas_enviados(jogos_dict):
-    """Verifica o placar e edita a mensagem no Telegram com ✅ ou ❌."""
+    """Verifica o placar e edita o alerta apenas anexando os emojis de GREEN ou RED ao final."""
     chaves_para_remover = []
 
     for chave_alerta, info in list(alertas_pendentes.items()):
@@ -204,17 +203,17 @@ def validar_alertas_enviados(jogos_dict):
         eh_finalizado = time_status == 'finished' or 'ended' in status_desc or 'ft' in status_desc
 
         if gols_atuais > gols_no_alerta:
-            nova_mensagem = f"✅ *GREEN! GOL CONFIRMADO!* ✅\n\n{msg_original}\n\n⚽ *Placar Atualizado:* {gols_c} x {gols_f}"
+            nova_mensagem = f"{msg_original}\n\n✅️✅️✅️"
             editar_alerta(message_id, nova_mensagem)
             chaves_para_remover.append(chave_alerta)
 
         else:
             if mercado in ['05_HT', '15_HT'] and (eh_intervalo or eh_2h or eh_finalizado):
-                nova_mensagem = f"❌ *RED* ❌\n\n{msg_original}"
+                nova_mensagem = f"{msg_original}\n\n❌️❌️❌️"
                 editar_alerta(message_id, nova_mensagem)
                 chaves_para_remover.append(chave_alerta)
             elif mercado == 'LIMITE_FT' and eh_finalizado:
-                nova_mensagem = f"❌ *RED* ❌\n\n{msg_original}"
+                nova_mensagem = f"{msg_original}\n\n❌️❌️❌️"
                 editar_alerta(message_id, nova_mensagem)
                 chaves_para_remover.append(chave_alerta)
 
@@ -280,7 +279,6 @@ def checar_jogos_ao_vivo():
 
             stats = obter_estatisticas_sofascore(event_id)
             
-            # Extração discriminada (Total, Casa, Fora)
             cg_tot, cg_h, cg_a = extrair_stat_sofascore(stats, 'Shots on target')
             cf_tot, cf_h, cf_a = extrair_stat_sofascore(stats, 'Shots off target')
             esc_tot, esc_h, esc_a = extrair_stat_sofascore(stats, 'Corner kicks')
@@ -294,19 +292,15 @@ def checar_jogos_ao_vivo():
             escanteios = int(esc_tot)
             esc_h_int, esc_a_int = int(esc_h), int(esc_a)
 
-            # 1. Expected Goals (xG)
             xg_tot, xg_h, xg_a = extrair_xg_sofascore(stats)
             linha_xg = f"📈 *xG Acumulado:* `{xg_tot:.2f}` _({time_casa} {xg_h:.2f} | {xg_a:.2f} {time_fora})_\n" if xg_tot > 0 else ""
 
-            # 2. Fluxo da Partida (Attack Momentum)
             pico_pressao, linha_fluxo = obter_pressao_grafico_sofascore(event_id)
             fluxo_confirmado = (pico_pressao >= 30) if pico_pressao > 0 else True
 
-            # 3. Tendência Pré-Live
             prelive_dados = obter_prelive_sofascore(event_id)
             linha_prelive = "📋 *Tendência Pré-Live:* Propenso a Gols ✅\n" if prelive_dados else ""
 
-            # Bloco de Estatísticas Ordenado Conforme Solicitado
             bloco_estatisticas = (
                 f"{linha_xg}"
                 f"{linha_fluxo}"
@@ -400,7 +394,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando com estatisticas discriminadas...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando com marcacao de GREEN (✅️✅️✅️) e RED (❌️❌️❌️)...")
 
     while True:
         try:

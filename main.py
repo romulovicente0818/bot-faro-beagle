@@ -6,7 +6,7 @@ import zoneinfo
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = 'COLOQUE_AQUI_SEU_NOVO_TOKEN'
+TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -1808,4 +1808,4 @@ if __name__ == '__main__':
                 f"Aviso no ciclo principal: {e}"
             )
 
-        time.sleep(240)
+        time.sleep(120)

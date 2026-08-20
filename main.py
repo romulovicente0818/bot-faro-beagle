@@ -6,7 +6,7 @@ import zoneinfo
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
+TELEGRAM_TOKEN = 'COLOQUE_AQUI_SEU_NOVO_TOKEN'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -84,7 +84,14 @@ def editar_alerta(message_id, nova_mensagem):
     }
 
     try:
-        scraper.post(url, json=payload, timeout=10)
+        res = scraper.post(url, json=payload, timeout=10)
+
+        if res.status_code != 200:
+            print(f"Erro ao editar mensagem Telegram: {res.status_code} - {res.text[:500]}")
+        else:
+            dados = res.json()
+            if not dados.get('ok', False):
+                print(f"Telegram recusou edição da mensagem: {dados}")
 
     except Exception as e:
         print(f"Erro ao editar mensagem Telegram: {e}")
@@ -994,6 +1001,135 @@ def classificar_qualidade(xg_tot, chutes_gol, grandes_chances):
     return 'BAIXA'
 
 
+def calcular_confianca_independente(
+    mercado,
+    minutagem,
+    xg_tot,
+    fin_tot,
+    chutes_gol,
+    escanteios,
+    grandes_chances,
+    fin_h,
+    fin_a,
+    pressao,
+):
+    """
+    Calcula a CONFIANÇA do alerta de forma independente do GOAL SCORE.
+
+    O Goal Score mede força/volume ofensivo acumulado.
+    A Confiança mede a convergência dos sinais para o mercado específico.
+    Não utiliza o score interno nem o GOAL SCORE como entrada.
+    """
+
+    try:
+        minuto = int(str(minutagem).split("'")[0])
+    except (ValueError, IndexError):
+        minuto = 45
+
+    recente = max(0.0, float(pressao.get('recente', 0)))
+    pico = max(0.0, float(pressao.get('pico', 0)))
+    aceleracao = float(pressao.get('aceleracao', 0))
+
+    # Limita cada componente entre 0 e 1.
+    def saturar(valor, alvo):
+        if alvo <= 0:
+            return 0.0
+        return max(0.0, min(1.0, float(valor) / float(alvo)))
+
+    # Produção dos dois lados: útil como confirmação, mas não obrigatória.
+    maior = max(fin_h, fin_a)
+    menor = min(fin_h, fin_a)
+    equilibrio = (menor / maior) if maior > 0 else 0.0
+
+    if mercado == '05_HT':
+        # +0,5 HT: prioridade para qualidade imediata e pressão.
+        componentes = [
+            (saturar(xg_tot, 0.70), 30),
+            (saturar(chutes_gol, 4), 25),
+            (saturar(grandes_chances, 2), 20),
+            (saturar(recente, 40), 15),
+            (saturar(fin_tot, 10), 5),
+            (saturar(escanteios, 5), 5),
+        ]
+        alvos = (xg_tot >= 0.55, chutes_gol >= 3, grandes_chances >= 1,
+                 recente >= 30 or pico >= 40)
+        minimo_convergencia = 3
+
+    elif mercado == '15_HT':
+        # +1,5 HT: exige maior convergência porque ainda falta outro gol.
+        componentes = [
+            (saturar(xg_tot, 1.00), 30),
+            (saturar(chutes_gol, 4), 22),
+            (saturar(grandes_chances, 2), 18),
+            (saturar(recente, 45), 15),
+            (saturar(fin_tot, 11), 5),
+            (saturar(escanteios, 5), 5),
+            (equilibrio, 5),
+        ]
+        alvos = (xg_tot >= 0.80, chutes_gol >= 3, grandes_chances >= 1,
+                 recente >= 30 or pico >= 40, fin_tot >= 8)
+        minimo_convergencia = 3
+
+    else:
+        # Limite FT: peso maior para produção acumulada e pressão do 2º tempo.
+        componentes = [
+            (saturar(xg_tot, 1.70), 28),
+            (saturar(chutes_gol, 7), 22),
+            (saturar(grandes_chances, 3), 18),
+            (saturar(recente, 50), 17),
+            (saturar(fin_tot, 18), 8),
+            (saturar(escanteios, 8), 4),
+            (saturar(max(aceleracao, 0), 12), 3),
+        ]
+        alvos = (xg_tot >= 1.30, chutes_gol >= 5, grandes_chances >= 2,
+                 recente >= 35 or pico >= 50, fin_tot >= 14)
+        minimo_convergencia = 3
+
+    base = sum(valor * peso for valor, peso in componentes)
+
+    # Bônus por convergência de sinais. Isso diferencia confiança de volume puro.
+    sinais_fortes = sum(1 for sinal in alvos if sinal)
+    if sinais_fortes >= 4:
+        base += 7
+    elif sinais_fortes >= minimo_convergencia:
+        base += 4
+
+    # Pressão em aceleração aumenta a confiabilidade; queda forte reduz.
+    if aceleracao >= 8:
+        base += 4
+    elif aceleracao >= 4:
+        base += 2
+    elif aceleracao <= -8:
+        base -= 5
+    elif aceleracao <= -4:
+        base -= 2
+
+    # Para HT, equilíbrio é uma confirmação extra, não um requisito.
+    if mercado in ('05_HT', '15_HT') and equilibrio >= 0.50:
+        base += 3
+
+    # Evita confiança artificialmente alta quando os principais sinais estão fracos.
+    principais_fracos = (
+        xg_tot < (0.35 if mercado == '05_HT' else 0.55 if mercado == '15_HT' else 0.90)
+        and chutes_gol < (2 if mercado != 'LIMITE_FT' else 3)
+        and grandes_chances == 0
+    )
+    if principais_fracos:
+        base -= 8
+
+    # Pequeno ajuste temporal: dentro da janela do filtro, o ponto mais tardio
+    # é ligeiramente mais informativo, sem transformar minuto em score.
+    if mercado == '05_HT' and minuto >= 22:
+        base += 2
+    elif mercado == '15_HT' and minuto >= 25:
+        base += 2
+    elif mercado == 'LIMITE_FT' and minuto >= 72:
+        base += 2
+
+    confianca = max(0.0, min(10.0, base / 10.0))
+    return round(confianca, 1)
+
+
 def montar_motivos_exibicao(
     xg_tot,
     fin_tot,
@@ -1087,7 +1223,18 @@ def montar_layout_alerta(
     qualidade = classificar_qualidade(
         xg_tot, chutes_gol, grandes_chances
     )
-    confianca = score_100 / 10
+    confianca = calcular_confianca_independente(
+        mercado,
+        minutagem,
+        xg_tot,
+        fin_tot,
+        chutes_gol,
+        escanteios,
+        grandes_chances,
+        fin_h,
+        fin_a,
+        pressao,
+    )
 
     motivos = montar_motivos_exibicao(
         xg_tot,
@@ -1154,6 +1301,17 @@ def validar_alertas_enviados(jogos_dict):
         msg_original = info['mensagem_original']
 
         item_jogo = jogos_dict.get(event_id)
+
+        # Se o jogo saiu do endpoint /events/live, ele pode ter terminado.
+        # Busca o evento individual para validar RED/GREEN no FT.
+        if not item_jogo:
+            try:
+                url_evento = f"https://api.sofascore.com/api/v1/event/{event_id}"
+                res_evento = scraper.get(url_evento, timeout=10)
+                if res_evento.status_code == 200:
+                    item_jogo = res_evento.json().get('event')
+            except Exception as e:
+                print(f"Erro ao consultar evento {event_id} para validar alerta: {e}")
 
         if not item_jogo:
             continue
@@ -1809,4 +1967,4 @@ if __name__ == '__main__':
                 f"Aviso no ciclo principal: {e}"
             )
 
-        time.sleep(120)
+        time.sleep(240)

@@ -87,7 +87,6 @@ def obter_estatisticas_sofascore(event_id):
     return []
 
 def obter_prelive_sofascore(event_id):
-    """Lê os dados pré-jogo das equipes no Sofascore."""
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/prematch-form"
     try:
         res = scraper.get(url, timeout=10)
@@ -463,7 +462,7 @@ def montar_layout_alerta(mercado, liga, time_casa, time_fora, gols_c, gols_f, mi
     mensagem = (
         f'🐶 *FARO DE BEAGLE*\n'
         f'{titulo}\n'
-        f'🏆 *{liga}*\n\n'
+        f'🏆 *Liga:* `{liga}`\n\n'
         f'*{time_casa} x {time_fora}*\n'
         f'⏱️ {minutagem} — {gols_c}x{gols_f}\n\n'
         f'📊 *GOAL SCORE: {score_100}/100*\n\n'
@@ -485,6 +484,7 @@ def montar_layout_alerta(mercado, liga, time_casa, time_fora, gols_c, gols_f, mi
     return mensagem
 
 def validar_alertas_enviados(jogos_dict):
+    """Verifica o placar e edita o alerta anexando ✅️✅️✅️ em caso de gol ou ❌️❌️❌️ em caso de encerramento sem gol."""
     chaves_para_remover = []
 
     for chave_alerta, info in list(alertas_pendentes.items()):
@@ -496,6 +496,7 @@ def validar_alertas_enviados(jogos_dict):
 
         item_jogo = jogos_dict.get(event_id)
 
+        # Se o jogo saiu do feed ao vivo (terminou), valida RED se não teve gol
         if not item_jogo:
             nova_mensagem = f"{msg_original}\n\n❌️❌️❌️"
             editar_alerta(message_id, nova_mensagem)
@@ -513,17 +514,21 @@ def validar_alertas_enviados(jogos_dict):
         eh_2h = ('2nd' in status_desc or time_status == '2nd')
         eh_finalizado = (time_status == 'finished' or 'ended' in status_desc or 'ft' in status_desc or 'extra' in status_desc)
 
+        # 1. GREEN (GOL EXTRA CONFIRMADO)
         if gols_atuais > gols_no_alerta:
             nova_mensagem = f"{msg_original}\n\n✅️✅️✅️"
             editar_alerta(message_id, nova_mensagem)
             chaves_para_remover.append(chave_alerta)
 
+        # 2. RED (TEMPO ESGOTADO SEM GOL)
         else:
+            # Trava do HT: Se entrou no 2º tempo, intervalo ou finalizou sem o gol -> RED imediato
             if mercado in ['05_HT', '15_HT'] and (eh_intervalo or eh_2h or eh_finalizado):
                 nova_mensagem = f"{msg_original}\n\n❌️❌️❌️"
                 editar_alerta(message_id, nova_mensagem)
                 chaves_para_remover.append(chave_alerta)
 
+            # Trava do FT: Se o jogo terminou sem o gol -> RED
             elif mercado == 'LIMITE_FT' and eh_finalizado:
                 nova_mensagem = f"{msg_original}\n\n❌️❌️❌️"
                 editar_alerta(message_id, nova_mensagem)
@@ -549,6 +554,7 @@ def checar_jogos_ao_vivo():
         print(f"[{horario}] Total de partidas ao vivo localizadas: {len(jogos)}")
 
         jogos_dict = {str(item.get('id', '')).strip(): item for item in jogos if item.get('id')}
+
         validar_alertas_enviados(jogos_dict)
 
         for item in jogos:
@@ -658,7 +664,7 @@ def checar_jogos_ao_vivo():
 
 if __name__ == '__main__':
     horario_inicio = obter_horario_brasil().strftime('%H:%M:%S')
-    print(f"[{horario_inicio}] Faro de Beagle rodando com filtro Pre-Live e In-Live combinados...")
+    print(f"[{horario_inicio}] Faro de Beagle rodando com marcacao de RED/GREEN e Liga destacada...")
 
     while True:
         try:

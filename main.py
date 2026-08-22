@@ -6,7 +6,7 @@ import zoneinfo
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
+TELEGRAM_TOKEN = 'COLOQUE_AQUI_SEU_NOVO_TOKEN'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -49,6 +49,7 @@ alertas_pendentes = {}
 historico_diario = []
 ultimo_relatorio_data = None
 ultima_data_historico = None
+relatorios_por_message_id = {}
 
 
 def obter_horario_brasil():
@@ -123,6 +124,150 @@ def obter_prelive_sofascore(event_id):
         pass
 
     return None
+
+
+def analisar_prelive_por_mercado(event_id, home_team_id, away_team_id, mercado, total_gols_atual):
+    """Analisa o pré-live de acordo com o mercado do alerta.
+
+    Usa a forma pré-jogo e os últimos jogos das duas equipes como confirmação
+    secundária. O resultado serve apenas para ajustar a Confiança; não bloqueia
+    nem libera o alerta.
+    """
+    try:
+        form = obter_prelive_sofascore(event_id)
+
+        ids = [home_team_id, away_team_id]
+        jogos = []
+
+        for team_id in ids:
+            if not team_id:
+                continue
+
+            url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
+            res = scraper.get(url, timeout=10)
+
+            if res.status_code != 200:
+                continue
+
+            eventos = res.json().get('events', [])
+            jogos.extend(eventos[:5])
+
+        if not jogos:
+            return {
+                'ajuste': 0.0,
+                'status': 'SEM DADOS',
+                'detalhe': ''
+            }
+
+        # Remove duplicados.
+        unicos = {}
+        for jogo in jogos:
+            if jogo.get('id'):
+                unicos[jogo['id']] = jogo
+        jogos = list(unicos.values())
+
+        primeiros_gols = []
+        totais = []
+
+        for jogo in jogos:
+            hs = jogo.get('homeScore', {})
+            aws = jogo.get('awayScore', {})
+
+            total = hs.get('current')
+            if total is None or aws.get('current') is None:
+                continue
+
+            total = int(total) + int(aws.get('current', 0))
+            totais.append(total)
+
+            h1 = hs.get('period1')
+            a1 = aws.get('period1')
+
+            if h1 is not None and a1 is not None:
+                primeiros_gols.append(int(h1) + int(a1))
+
+        # Forma pré-live também funciona como desempate secundário.
+        form_values = []
+        for lado in ('homeTeam', 'awayTeam'):
+            dados = (form or {}).get(lado, {})
+            forma = dados.get('form', [])
+            if isinstance(forma, list):
+                form_values.extend(forma)
+
+        positivos_forma = sum(1 for x in form_values if x in ('W', 'D'))
+        taxa_forma = (
+            positivos_forma / len(form_values)
+            if form_values else 0
+        )
+
+        ajuste = 0.0
+        status = 'NEUTRO'
+        detalhe = ''
+
+        if mercado == '05_HT':
+            if primeiros_gols:
+                taxa = sum(g >= 1 for g in primeiros_gols) / len(primeiros_gols)
+                if taxa >= 0.70:
+                    ajuste = 0.35
+                    status = 'FAVORÁVEL'
+                elif taxa < 0.40:
+                    ajuste = -0.25
+                    status = 'DESFAVORÁVEL'
+                else:
+                    ajuste = 0.05
+                    status = 'NEUTRO'
+                detalhe = f'{taxa*100:.0f}% com gol no 1º tempo'
+
+        elif mercado == '15_HT':
+            if primeiros_gols:
+                taxa = sum(g >= 2 for g in primeiros_gols) / len(primeiros_gols)
+                if taxa >= 0.50:
+                    ajuste = 0.40
+                    status = 'FAVORÁVEL'
+                elif taxa < 0.25:
+                    ajuste = -0.30
+                    status = 'DESFAVORÁVEL'
+                else:
+                    ajuste = 0.05
+                    status = 'NEUTRO'
+                detalhe = f'{taxa*100:.0f}% com 2+ gols no 1º tempo'
+
+        elif mercado == 'LIMITE_FT':
+            linha = total_gols_atual + 0.5
+            if totais:
+                taxa = sum(g > total_gols_atual for g in totais) / len(totais)
+
+                if taxa >= 0.60:
+                    ajuste = 0.45
+                    status = 'FAVORÁVEL'
+                elif taxa < 0.30:
+                    ajuste = -0.35
+                    status = 'DESFAVORÁVEL'
+                else:
+                    ajuste = 0.05
+                    status = 'NEUTRO'
+
+                detalhe = (
+                    f'{taxa*100:.0f}% dos últimos jogos superaram '
+                    f'{linha:.1f} gols'
+                )
+
+        # Forma geral entra apenas como desempate muito pequeno.
+        if status == 'NEUTRO' and taxa_forma >= 0.70:
+            ajuste += 0.10
+
+        return {
+            'ajuste': ajuste,
+            'status': status,
+            'detalhe': detalhe
+        }
+
+    except Exception:
+        return {
+            'ajuste': 0.0,
+            'status': 'SEM DADOS',
+            'detalhe': ''
+        }
 
 
 def obter_pressao_grafico_sofascore(event_id):
@@ -999,6 +1144,102 @@ def classificar_qualidade(xg_tot, chutes_gol, grandes_chances):
     return 'BAIXA'
 
 
+def calcular_confianca_independente(
+    mercado,
+    xg_tot,
+    fin_tot,
+    chutes_gol,
+    grandes_chances,
+    pressao,
+    intensidade,
+    qualidade,
+    prelive_info=None,
+):
+    """Calcula a Confiança de forma independente do GOAL SCORE.
+
+    A confiança usa somente os sinais qualitativos/estatísticos do jogo,
+    com pesos próprios, e não reutiliza o score interno do filtro.
+    """
+    pontos = 4.0
+
+    # xG
+    if xg_tot >= 1.20:
+        pontos += 1.5
+    elif xg_tot >= 0.90:
+        pontos += 1.2
+    elif xg_tot >= 0.60:
+        pontos += 0.8
+    elif xg_tot >= 0.40:
+        pontos += 0.4
+
+    # Chutes no alvo
+    if chutes_gol >= 6:
+        pontos += 1.2
+    elif chutes_gol >= 4:
+        pontos += 0.9
+    elif chutes_gol >= 3:
+        pontos += 0.6
+    elif chutes_gol >= 2:
+        pontos += 0.3
+
+    # Grandes chances
+    if grandes_chances >= 3:
+        pontos += 1.0
+    elif grandes_chances >= 2:
+        pontos += 0.8
+    elif grandes_chances >= 1:
+        pontos += 0.4
+
+    # Volume geral
+    if fin_tot >= 14:
+        pontos += 0.7
+    elif fin_tot >= 10:
+        pontos += 0.5
+    elif fin_tot >= 7:
+        pontos += 0.3
+
+    # Pressão
+    recente = pressao.get('recente', 0)
+    pico = pressao.get('pico', 0)
+    aceleracao = pressao.get('aceleracao', 0)
+
+    if recente >= 45 or pico >= 60:
+        pontos += 0.8
+    elif recente >= 30 or pico >= 45:
+        pontos += 0.5
+    elif recente >= 20 or pico >= 30:
+        pontos += 0.3
+
+    if aceleracao >= 8:
+        pontos += 0.4
+    elif aceleracao >= 4:
+        pontos += 0.2
+
+    # Qualidade e intensidade entram como fatores independentes.
+    if qualidade == 'ALTA':
+        pontos += 0.4
+    elif qualidade == 'MÉDIA':
+        pontos += 0.2
+
+    if intensidade == 'CRESCENTE':
+        pontos += 0.4
+    elif intensidade == 'ALTA':
+        pontos += 0.2
+
+    # Ajustes pequenos por mercado, sem usar o GOAL SCORE.
+    if mercado == '05_HT':
+        pontos += 0.1
+    elif mercado == '15_HT':
+        pontos += 0.0
+    elif mercado == 'LIMITE_FT':
+        pontos -= 0.1
+
+    if prelive_info:
+        pontos += float(prelive_info.get('ajuste', 0.0))
+
+    return max(0.0, min(10.0, round(pontos, 1)))
+
+
 def montar_motivos_exibicao(
     xg_tot,
     fin_tot,
@@ -1082,6 +1323,7 @@ def montar_layout_alerta(
     esc_h,
     esc_a,
     pressao,
+    prelive_info=None,
 ):
     """Gera o layout padrão Faro de Beagle."""
     score_100 = normalizar_score_100(score, mercado)
@@ -1092,7 +1334,17 @@ def montar_layout_alerta(
     qualidade = classificar_qualidade(
         xg_tot, chutes_gol, grandes_chances
     )
-    confianca = score_100 / 10
+    confianca = calcular_confianca_independente(
+        mercado,
+        xg_tot,
+        fin_tot,
+        chutes_gol,
+        grandes_chances,
+        pressao,
+        intensidade,
+        qualidade,
+        prelive_info,
+    )
 
     motivos = montar_motivos_exibicao(
         xg_tot,
@@ -1124,6 +1376,7 @@ def montar_layout_alerta(
     mensagem = (
         f'🐶 *FARO DE BEAGLE*\n'
         f'{titulo}\n\n'
+        f'🏆 *Liga:* {liga}\n'
         f'{time_casa} x {time_fora}\n'
         f'⏱️ {minutagem} — {gols_c}x{gols_f}\n\n'
         f'📊 *GOAL SCORE: {score_100}/100*\n\n'
@@ -1235,6 +1488,23 @@ def enviar_relatorio_diario():
     else:
         linhas.append('Nenhum alerta confirmado no período.')
 
+    pendentes = list(alertas_pendentes.values())
+    if pendentes:
+        linhas.extend(['', '⏳ *ALERTAS AINDA EM ABERTO ÀS 02H*'])
+        for info in pendentes:
+            partes = info.get('mensagem_original', '').splitlines()
+            resumo = []
+            for linha in partes:
+                if (
+                    'FARO DE BEAGLE' in linha
+                    or 'Liga:' in linha
+                    or '🏆' in linha
+                    or ' x ' in linha
+                    or '⏱️' in linha
+                ):
+                    resumo.append(linha.replace('*', ''))
+            linhas.append('⏳ ' + ' | '.join(resumo[:4]))
+
     linhas.extend([
         '',
         '━━━━━━━━━━━━━━━━━━',
@@ -1242,8 +1512,52 @@ def enviar_relatorio_diario():
         '📊 Operação encerrada às 02:00.',
     ])
 
-    if enviar_alerta('\n'.join(linhas)):
+    mensagem_relatorio = '\n'.join(linhas)
+    message_id = enviar_alerta(mensagem_relatorio)
+    if message_id:
         ultimo_relatorio_data = agora.date()
+        relatorios_por_message_id[message_id] = mensagem_relatorio
+        for info in alertas_pendentes.values():
+            info['relatorio_message_id'] = message_id
+            info['relatorio_mensagem'] = mensagem_relatorio
+
+
+def atualizar_relatorio_pos_02h(info, resultado):
+    """Atualiza o relatório das 02h quando um alerta que estava aberto é confirmado depois."""
+    report_id = info.get('relatorio_message_id')
+    if not report_id:
+        return
+
+    base = relatorios_por_message_id.get(report_id, info.get('relatorio_mensagem', ''))
+    if not base:
+        return
+
+    marcador = '🟢' if resultado == 'GREEN' else '🔴'
+    partes = info.get('mensagem_original', '').splitlines()
+    resumo = []
+    for linha in partes:
+        if (
+            'FARO DE BEAGLE' in linha
+            or 'Liga:' in linha
+            or '🏆' in linha
+            or ' x ' in linha
+            or '⏱️' in linha
+        ):
+            resumo.append(linha.replace('*', ''))
+
+    atualizacao = (
+        '\n\n━━━━━━━━━━━━━━━━━━\n'
+        '🔄 *ATUALIZAÇÃO PÓS-02H*\n'
+        f'{marcador} ' + ' | '.join(resumo[:4]) + '\n'
+        f'{marcador} Resultado confirmado: {resultado}'
+    )
+
+    nova = base + atualizacao
+    if editar_alerta(report_id, nova) is None:
+        # editar_alerta não retorna status; mantemos o texto local para futuras atualizações.
+        pass
+    relatorios_por_message_id[report_id] = nova
+
 
 
 def validar_alertas_enviados(jogos_dict):
@@ -1320,6 +1634,8 @@ def validar_alertas_enviados(jogos_dict):
             )
 
             registrar_resultado_diario(info, 'GREEN')
+            if info.get('relatorio_message_id'):
+                atualizar_relatorio_pos_02h(info, 'GREEN')
 
             chaves_para_remover.append(
                 chave_alerta
@@ -1344,6 +1660,8 @@ def validar_alertas_enviados(jogos_dict):
                 )
 
                 registrar_resultado_diario(info, 'RED')
+                if info.get('relatorio_message_id'):
+                    atualizar_relatorio_pos_02h(info, 'RED')
 
                 chaves_para_remover.append(
                     chave_alerta
@@ -1362,6 +1680,8 @@ def validar_alertas_enviados(jogos_dict):
                 )
 
                 registrar_resultado_diario(info, 'RED')
+                if info.get('relatorio_message_id'):
+                    atualizar_relatorio_pos_02h(info, 'RED')
 
                 chaves_para_remover.append(
                     chave_alerta
@@ -1372,6 +1692,30 @@ def validar_alertas_enviados(jogos_dict):
             ch,
             None
         )
+
+
+def obter_evento_sofascore(event_id):
+    """Busca um evento individual para validar alertas que atravessaram 02h."""
+    url = f"https://api.sofascore.com/api/v1/event/{event_id}"
+    try:
+        res = scraper.get(url, timeout=10)
+        if res.status_code == 200:
+            return res.json().get('event')
+    except Exception:
+        pass
+    return None
+
+
+def checar_alertas_pendentes_fora_do_live(jogos_dict):
+    """Inclui no dicionário os alertas pendentes que já saíram da lista live."""
+    for info in list(alertas_pendentes.values()):
+        event_id = str(info.get('event_id', '')).strip()
+        if not event_id or event_id in jogos_dict:
+            continue
+        evento = obter_evento_sofascore(event_id)
+        if evento:
+            jogos_dict[event_id] = evento
+
 
 
 def checar_jogos_ao_vivo():
@@ -1424,6 +1768,10 @@ def checar_jogos_ao_vivo():
             for item in jogos
             if item.get('id')
         }
+
+        checar_alertas_pendentes_fora_do_live(
+            jogos_dict
+        )
 
         validar_alertas_enviados(
             jogos_dict
@@ -1733,7 +2081,14 @@ def checar_jogos_ao_vivo():
                             escanteios,
                             esc_h_int,
                             esc_a_int,
-                            pressao
+                            pressao,
+                            analisar_prelive_por_mercado(
+                                event_id,
+                                item.get('homeTeam', {}).get('id'),
+                                item.get('awayTeam', {}).get('id'),
+                                '05_HT',
+                                total_gols
+                            )
                         )
 
                         msg_id = enviar_alerta(mensagem)
@@ -1791,7 +2146,14 @@ def checar_jogos_ao_vivo():
                             escanteios,
                             esc_h_int,
                             esc_a_int,
-                            pressao
+                            pressao,
+                            analisar_prelive_por_mercado(
+                                event_id,
+                                item.get('homeTeam', {}).get('id'),
+                                item.get('awayTeam', {}).get('id'),
+                                '15_HT',
+                                total_gols
+                            )
                         )
 
                         msg_id = enviar_alerta(mensagem)
@@ -1853,7 +2215,14 @@ def checar_jogos_ao_vivo():
                             escanteios,
                             esc_h_int,
                             esc_a_int,
-                            pressao
+                            pressao,
+                            analisar_prelive_por_mercado(
+                                event_id,
+                                item.get('homeTeam', {}).get('id'),
+                                item.get('awayTeam', {}).get('id'),
+                                'LIMITE_FT',
+                                total_gols
+                            )
                         )
 
                         msg_id = enviar_alerta(mensagem)

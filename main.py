@@ -6,7 +6,7 @@ import zoneinfo
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
+TELEGRAM_TOKEN = 'COLOQUE_AQUI_SEU_NOVO_TOKEN'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -36,6 +36,38 @@ scraper = cloudscraper.create_scraper(
         'desktop': True
     }
 )
+
+# Camada de acesso ao SofaScore com headers XHR e fallback de domínio.
+# Mantém o restante do funcionamento do bot inalterado.
+SOFASCORE_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Referer': 'https://www.sofascore.com/',
+    'Origin': 'https://www.sofascore.com',
+    'X-Requested-With': 'XMLHttpRequest',
+}
+
+SOFASCORE_BASES = [
+    'https://api.sofascore.com/api/v1',
+    'https://api.sofascore.app/api/v1',
+]
+
+def sofascore_get(path, timeout=10):
+    path = path.lstrip('/')
+    for base in SOFASCORE_BASES:
+        url = f'{base}/{path}'
+        try:
+            res = scraper.get(
+                url,
+                headers=SOFASCORE_HEADERS,
+                timeout=timeout
+            )
+            if res.status_code == 200:
+                return res
+            print(f'SofaScore {base}: status {res.status_code} para {path}')
+        except Exception as e:
+            print(f'Erro SofaScore {base}: {e}')
+    return None
 
 # Registros para evitar repetição do mesmo alerta
 notificados_05_ht = set()
@@ -100,7 +132,7 @@ def obter_estatisticas_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
 
     try:
-        res = scraper.get(url, timeout=10)
+        res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
 
         if res.status_code == 200:
             return res.json().get('statistics', [])
@@ -115,7 +147,7 @@ def obter_prelive_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/prematch-form"
 
     try:
-        res = scraper.get(url, timeout=10)
+        res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
 
         if res.status_code == 200:
             return res.json()
@@ -144,7 +176,7 @@ def analisar_prelive_por_mercado(event_id, home_team_id, away_team_id, mercado, 
                 continue
 
             url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
-            res = scraper.get(url, timeout=10)
+            res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
 
             if res.status_code != 200:
                 continue
@@ -274,7 +306,7 @@ def obter_pressao_grafico_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/graph"
 
     try:
-        res = scraper.get(url, timeout=10)
+        res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
 
         if res.status_code == 200:
 
@@ -1698,7 +1730,7 @@ def obter_evento_sofascore(event_id):
     """Busca um evento individual para validar alertas que atravessaram 02h."""
     url = f"https://api.sofascore.com/api/v1/event/{event_id}"
     try:
-        res = scraper.get(url, timeout=10)
+        res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
         if res.status_code == 200:
             return res.json().get('event')
     except Exception:
@@ -1735,10 +1767,7 @@ def checar_jogos_ao_vivo():
 
     try:
 
-        response = scraper.get(
-            url,
-            timeout=15
-        )
+        response = sofascore_get('sport/football/events/live', timeout=15)
 
         if response.status_code != 200:
 

@@ -6,7 +6,7 @@ import zoneinfo
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
+TELEGRAM_TOKEN = 'COLOQUE_AQUI_SEU_NOVO_TOKEN'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -47,13 +47,18 @@ SOFASCORE_HEADERS = {
     'X-Requested-With': 'XMLHttpRequest',
 }
 
+# Ordem de acesso: API principal -> proxy do próprio site -> espelho.
+# O api.sofascore.app está retornando 404 para os endpoints usados pelo bot,
+# portanto ele foi removido da rota de fallback.
 SOFASCORE_BASES = [
     'https://api.sofascore.com/api/v1',
-    'https://api.sofascore.app/api/v1',
+    'https://www.sofascore.com/api/v1',
 ]
 
 def sofascore_get(path, timeout=10):
     path = path.lstrip('/')
+    ultimo_status = None
+
     for base in SOFASCORE_BASES:
         url = f'{base}/{path}'
         try:
@@ -62,11 +67,30 @@ def sofascore_get(path, timeout=10):
                 headers=SOFASCORE_HEADERS,
                 timeout=timeout
             )
+            ultimo_status = res.status_code
+
             if res.status_code == 200:
                 return res
-            print(f'SofaScore {base}: status {res.status_code} para {path}')
+
+            # 404 em endpoints individuais do SofaScore é esperado em
+            # alguns eventos/dados indisponíveis. Não imprimir cada 404
+            # evita saturar os logs do Railway.
+            if res.status_code != 404:
+                print(
+                    f'SofaScore {url}: status {res.status_code}'
+                )
+
         except Exception as e:
-            print(f'Erro SofaScore {base}: {e}')
+            print(f'Erro SofaScore {url}: {e}')
+
+    # Não gerar uma linha de log para cada endpoint que simplesmente
+    # respondeu 404. Erros diferentes de 404 continuam visíveis.
+    if ultimo_status is not None and ultimo_status != 404:
+        print(
+            f'SofaScore: nenhuma rota respondeu 200 para {path} '
+            f'(último status: {ultimo_status})'
+        )
+
     return None
 
 # Registros para evitar repetição do mesmo alerta
@@ -1731,7 +1755,7 @@ def obter_evento_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}"
     try:
         res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
-        if res.status_code == 200:
+        if res is not None and res.status_code == 200:
             return res.json().get('event')
     except Exception:
         pass
@@ -1769,7 +1793,7 @@ def checar_jogos_ao_vivo():
 
         response = sofascore_get('sport/football/events/live', timeout=15)
 
-        if response.status_code != 200:
+        if response is None or response.status_code != 200:
 
             print(
                 f"[{horario}] "

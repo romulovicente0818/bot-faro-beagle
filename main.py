@@ -6,7 +6,7 @@ import zoneinfo
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAE5i3mc3Rt7IibVr2Lai2b63vHKCADONX4'
+TELEGRAM_TOKEN = 'COLOQUE_AQUI_SEU_NOVO_TOKEN'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -44,6 +44,11 @@ notificados_limite_ft = set()
 
 # Dicionário de acompanhamento dos alertas enviados para validação do resultado
 alertas_pendentes = {}
+
+# Histórico dos resultados confirmados no dia, usado no relatório diário.
+historico_diario = []
+ultimo_relatorio_data = None
+ultima_data_historico = None
 
 
 def obter_horario_brasil():
@@ -1140,6 +1145,107 @@ def montar_layout_alerta(
     return mensagem
 
 
+def registrar_resultado_diario(info, resultado):
+    historico_diario.append({
+        'mercado': info.get('mercado', ''),
+        'event_id': info.get('event_id', ''),
+        'mensagem_original': info.get('mensagem_original', ''),
+        'resultado': resultado
+    })
+
+
+def enviar_relatorio_diario():
+    global ultimo_relatorio_data
+
+    agora = obter_horario_brasil()
+    if ultimo_relatorio_data == agora.date():
+        return
+
+    data_relatorio = agora.strftime('%d/%m/%Y')
+    total = len(historico_diario)
+    greens = sum(1 for item in historico_diario if item['resultado'] == 'GREEN')
+    reds = sum(1 for item in historico_diario if item['resultado'] == 'RED')
+    aproveitamento = (greens / total * 100) if total else 0.0
+
+    contagem = {
+        '05_HT': {'total': 0, 'green': 0, 'red': 0},
+        '15_HT': {'total': 0, 'green': 0, 'red': 0},
+        'LIMITE_FT': {'total': 0, 'green': 0, 'red': 0},
+    }
+
+    for item in historico_diario:
+        mercado = item['mercado']
+        if mercado in contagem:
+            contagem[mercado]['total'] += 1
+            if item['resultado'] == 'GREEN':
+                contagem[mercado]['green'] += 1
+            else:
+                contagem[mercado]['red'] += 1
+
+    nomes = {
+        '05_HT': '+0,5 HT',
+        '15_HT': '+1,5 HT',
+        'LIMITE_FT': 'Limite FT',
+    }
+
+    linhas = [
+        '🐶 *FARO DE BEAGLE*',
+        '📊 *RELATÓRIO DO DIA*',
+        '━━━━━━━━━━━━━━━━━━',
+        '',
+        f'📅 {data_relatorio}',
+        '',
+        f'🚨 Alertas confirmados: {total}',
+        f'🟢 Greens: {greens}',
+        f'🔴 Reds: {reds}',
+        f'📈 Aproveitamento: {aproveitamento:.1f}%',
+        '',
+        '━━━━━━━━━━━━━━━━━━',
+    ]
+
+    for mercado in ('05_HT', '15_HT', 'LIMITE_FT'):
+        dados = contagem[mercado]
+        taxa = (dados['green'] / dados['total'] * 100) if dados['total'] else 0.0
+        linhas.extend([
+            '',
+            f"🔥 *{nomes[mercado]}*",
+            f"Alertas: {dados['total']}",
+            f"🟢 Green: {dados['green']}",
+            f"🔴 Red: {dados['red']}",
+            f"📊 Aproveitamento: {taxa:.1f}%",
+        ])
+
+    linhas.extend(['', '━━━━━━━━━━━━━━━━━━', '', '📋 *ALERTAS CONFIRMADOS*'])
+
+    if historico_diario:
+        for item in historico_diario:
+            marcador = '🟢' if item['resultado'] == 'GREEN' else '🔴'
+            partes = item['mensagem_original'].splitlines()
+            resumo = []
+            for linha in partes:
+                if (
+                    'FARO DE BEAGLE' in linha
+                    or 'Liga:' in linha
+                    or '🏆' in linha
+                    or ' x ' in linha
+                    or '⏱️' in linha
+                ):
+                    resumo.append(linha.replace('*', ''))
+            linhas.append(f"{marcador} " + " | ".join(resumo[:4]))
+    else:
+        linhas.append('Nenhum alerta confirmado no período.')
+
+    linhas.extend([
+        '',
+        '━━━━━━━━━━━━━━━━━━',
+        '🐶 *FARO DE BEAGLE*',
+        '📊 Operação encerrada às 02:00.',
+    ])
+
+    if enviar_alerta('\n'.join(linhas)):
+        ultimo_relatorio_data = agora.date()
+
+
 def validar_alertas_enviados(jogos_dict):
     """Verifica o placar e edita o alerta apenas anexando os emojis de GREEN ou RED ao final."""
     chaves_para_remover = []
@@ -1213,6 +1319,8 @@ def validar_alertas_enviados(jogos_dict):
                 nova_mensagem
             )
 
+            registrar_resultado_diario(info, 'GREEN')
+
             chaves_para_remover.append(
                 chave_alerta
             )
@@ -1235,6 +1343,8 @@ def validar_alertas_enviados(jogos_dict):
                     nova_mensagem
                 )
 
+                registrar_resultado_diario(info, 'RED')
+
                 chaves_para_remover.append(
                     chave_alerta
                 )
@@ -1250,6 +1360,8 @@ def validar_alertas_enviados(jogos_dict):
                     message_id,
                     nova_mensagem
                 )
+
+                registrar_resultado_diario(info, 'RED')
 
                 chaves_para_remover.append(
                     chave_alerta
@@ -1785,7 +1897,13 @@ if __name__ == '__main__':
 
             hora_atual = agora_br.hour
 
-            if 8 <= hora_atual < 24:
+            # Cada período operacional começa às 08:00 e gera um novo histórico.
+            if hora_atual >= 8:
+                if ultima_data_historico != agora_br.date():
+                    historico_diario.clear()
+                    ultima_data_historico = agora_br.date()
+
+            if hora_atual >= 8 or hora_atual < 2:
 
                 checar_jogos_ao_vivo()
 
@@ -1799,8 +1917,10 @@ if __name__ == '__main__':
                     f"[{horario_formatado}] "
                     f"Bot em repouso fora "
                     f"do horário "
-                    f"(08h às 00h)."
+                    f"(08h às 02h)."
                 )
+
+                enviar_relatorio_diario()
 
         except Exception as e:
 

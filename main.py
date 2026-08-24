@@ -6,7 +6,7 @@ import zoneinfo
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAEm4h212tRP1DI_8h2XJbXKzRzhNZUa62g'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -685,6 +685,133 @@ def calcular_equilibrio(
     return 0
 
 
+\
+def avaliar_propensao_gol(
+    mercado,
+    gols_c,
+    gols_f,
+    xg_tot,
+    fin_h,
+    fin_a,
+    chutes_h,
+    chutes_a,
+    gc_h,
+    gc_a,
+    pressao,
+    intensidade
+):
+    """
+    Camada final de PROPENSÃO AO GOL.
+    O Goal Score continua intacto; esta função avalia o contexto atual:
+    placar, equipe atrás, produção de cada lado e pressão recente.
+    Não presume necessidade de resultado pela tabela, pois o bot não
+    consulta classificação/objetivo competitivo nesta versão.
+    """
+    pontos = 0
+    motivos = []
+
+    total_fin = fin_h + fin_a
+    total_chutes = chutes_h + chutes_a
+    total_gc = gc_h + gc_a
+    diferenca = abs(gols_c - gols_f)
+
+    recente = pressao.get('recente', 0)
+    aceleracao = pressao.get('aceleracao', 0)
+
+    if aceleracao <= -6:
+        pontos -= 1
+        motivos.append('intensidade recente em queda')
+
+    # HT: confirmação de que o jogo continua vivo.
+    if mercado in ('05_HT', '15_HT'):
+        if recente >= 30:
+            pontos += 1
+            motivos.append('pressão recente suficiente')
+        elif recente < 20 and aceleracao < 0:
+            pontos -= 1
+
+        if xg_tot >= 0.70 or total_gc >= 2 or total_chutes >= 3:
+            pontos += 1
+
+        if total_fin >= 8 or total_chutes >= 4:
+            pontos += 1
+
+        aprovado = pontos >= 1
+        return {
+            'aprovado': aprovado,
+            'pontos': pontos,
+            'nivel': 'ALTA' if pontos >= 2 else ('MÉDIA' if pontos >= 1 else 'BAIXA'),
+            'motivos': motivos
+        }
+
+    # FT: pergunta primeiro se existe contexto para um próximo gol.
+    if diferenca == 0:
+        if recente >= 30 or aceleracao >= 6:
+            pontos += 2
+            motivos.append('jogo empatado com pressão atual')
+        elif recente >= 20:
+            pontos += 1
+
+        if xg_tot >= 1.50:
+            pontos += 1
+        if total_chutes >= 5 or total_gc >= 2:
+            pontos += 1
+
+    elif diferenca == 1:
+        if gols_c < gols_f:
+            fin_trailing, shots_trailing = fin_h, chutes_h
+            gc_trailing = gc_h
+        else:
+            fin_trailing, shots_trailing = fin_a, chutes_a
+            gc_trailing = gc_a
+
+        share_fin = fin_trailing / total_fin if total_fin else 0
+        share_shots = shots_trailing / total_chutes if total_chutes else 0
+        share_gc = gc_trailing / total_gc if total_gc else 0
+
+        if share_fin >= 0.40 or share_shots >= 0.40 or share_gc >= 0.50:
+            pontos += 2
+            motivos.append('equipe atrás do placar está produzindo')
+        elif share_fin < 0.30 and share_shots < 0.30 and gc_trailing == 0:
+            pontos -= 2
+            motivos.append('equipe atrás do placar produz pouco')
+
+        if aceleracao <= -6 and share_shots < 0.40:
+            pontos -= 1
+            motivos.append('pressão não sustenta reação')
+
+        if recente >= 30:
+            pontos += 1
+        elif recente < 20 and aceleracao < 0:
+            pontos -= 1
+
+    else:
+        pontos -= 2
+        motivos.append('vantagem de dois ou mais gols')
+
+    if mercado == 'LIMITE_FT':
+        if recente >= 35:
+            pontos += 1
+        if aceleracao >= 6:
+            pontos += 1
+
+    # Para o limite FT, a entrada só passa quando há evidência contextual
+    # suficiente de que um novo gol continua plausível.
+    if mercado == 'LIMITE_FT' and (gols_c + gols_f) == 1:
+        aprovado = pontos >= 2
+    elif mercado == 'LIMITE_FT':
+        aprovado = pontos >= 1
+    else:
+        aprovado = pontos >= 1
+
+    return {
+        'aprovado': aprovado,
+        'pontos': pontos,
+        'nivel': 'ALTA' if pontos >= 3 else ('MÉDIA' if pontos >= 1 else 'BAIXA'),
+        'motivos': motivos
+    }
+
+
 def calcular_score_05_ht(
     xg_tot,
     fin_tot,
@@ -1154,107 +1281,6 @@ def calcular_score_limite_ft(
 
 
 
-
-def avaliar_seletividade(
-    mercado,
-    score,
-    xg_tot,
-    fin_tot,
-    chutes_gol,
-    grandes_chances,
-    escanteios,
-    pressao,
-    prelive_info,
-    total_gols_atual,
-):
-    """Segunda camada de qualidade: reduz alertas fracos sem desmontar o filtro principal."""
-    # Limiares internos mais altos que os filtros-base.
-    limites_score = {
-        '05_HT': 12,
-        '15_HT': 14,
-        'LIMITE_FT': 14,
-    }
-    minimo = limites_score.get(mercado, 14)
-
-    # Limite FT fica progressivamente mais exigente conforme o placar sobe.
-    if mercado == 'LIMITE_FT':
-        if total_gols_atual >= 4:
-            minimo = 16
-        elif total_gols_atual >= 3:
-            minimo = 15
-
-    if score < minimo:
-        return False
-
-    recente = pressao.get('recente', 0)
-    pico = pressao.get('pico', 0)
-    aceleracao = pressao.get('aceleracao', 0)
-
-    if mercado == '05_HT':
-        qualidade_real = (
-            xg_tot >= 0.50
-            or chutes_gol >= 2
-            or grandes_chances >= 1
-        )
-        pressao_real = (
-            recente >= 25
-            or pico >= 30
-            or aceleracao >= 6
-            or chutes_gol >= 3
-            or grandes_chances >= 1
-        )
-        if not (qualidade_real and pressao_real):
-            return False
-
-    elif mercado == '15_HT':
-        qualidade_real = (
-            xg_tot >= 0.85
-            or chutes_gol >= 3
-            or grandes_chances >= 1
-        )
-        pressao_real = (
-            recente >= 25
-            or pico >= 35
-            or aceleracao >= 5
-            or chutes_gol >= 3
-            or grandes_chances >= 1
-        )
-        if not (qualidade_real and pressao_real):
-            return False
-
-    elif mercado == 'LIMITE_FT':
-        # Em placares altos, volume sozinho não basta: exigimos qualidade clara.
-        qualidade_real = (
-            xg_tot >= 1.40
-            or chutes_gol >= 5
-            or grandes_chances >= 2
-        )
-        pressao_real = (
-            recente >= 30
-            or pico >= 40
-            or aceleracao >= 6
-            or chutes_gol >= 4
-            or grandes_chances >= 2
-        )
-        if not (qualidade_real and pressao_real):
-            return False
-
-    # Pré-live é compatibilidade de mercado, não um bloqueio absoluto.
-    status = (prelive_info or {}).get('status', 'SEM DADOS')
-    if status == 'DESFAVORÁVEL':
-        # Só permite contrariar o pré-live se o ao vivo for excepcional.
-        score_100 = normalizar_score_100(score, mercado)
-        excepcional = (
-            score_100 >= 85
-            and xg_tot >= (0.80 if mercado == '05_HT' else 1.00 if mercado == '15_HT' else 1.70)
-            and chutes_gol >= (3 if mercado == '05_HT' else 4)
-            and (recentemente_forte := (recente >= 40 or pico >= 55 or aceleracao >= 10))
-        )
-        if not excepcional:
-            return False
-
-    return True
-
 def normalizar_score_100(score, mercado):
     """Converte o score interno do filtro para uma escala de 0 a 100."""
     maximos = {
@@ -1564,26 +1590,6 @@ def registrar_resultado_diario(info, resultado):
     })
 
 
-def montar_relatorio_resumido():
-    agora = obter_horario_brasil()
-    total = len(historico_diario)
-    greens = sum(1 for item in historico_diario if item['resultado'] == 'GREEN')
-    reds = sum(1 for item in historico_diario if item['resultado'] == 'RED')
-
-    return (
-        '🐶 *FARO DE BEAGLE*\n'
-        '📊 *RELATÓRIO DO DIA*\n'
-        '━━━━━━━━━━━━━━━━━━\n\n'
-        f'📅 {agora.strftime("%d/%m/%Y")}\n\n'
-        f'📥 Entradas: {total}\n'
-        f'🟢 Greens: {greens}\n'
-        f'🔴 Reds: {reds}\n\n'
-        '━━━━━━━━━━━━━━━━━━\n'
-        '🐶 *FARO DE BEAGLE*\n'
-        '📊 Operação encerrada às 02:00.'
-    )
-
-
 def enviar_relatorio_diario():
     global ultimo_relatorio_data
 
@@ -1591,9 +1597,106 @@ def enviar_relatorio_diario():
     if ultimo_relatorio_data == agora.date():
         return
 
-    mensagem_relatorio = montar_relatorio_resumido()
-    message_id = enviar_alerta(mensagem_relatorio)
+    data_relatorio = agora.strftime('%d/%m/%Y')
+    total = len(historico_diario)
+    greens = sum(1 for item in historico_diario if item['resultado'] == 'GREEN')
+    reds = sum(1 for item in historico_diario if item['resultado'] == 'RED')
+    aproveitamento = (greens / total * 100) if total else 0.0
 
+    contagem = {
+        '05_HT': {'total': 0, 'green': 0, 'red': 0},
+        '15_HT': {'total': 0, 'green': 0, 'red': 0},
+        'LIMITE_FT': {'total': 0, 'green': 0, 'red': 0},
+    }
+
+    for item in historico_diario:
+        mercado = item['mercado']
+        if mercado in contagem:
+            contagem[mercado]['total'] += 1
+            if item['resultado'] == 'GREEN':
+                contagem[mercado]['green'] += 1
+            else:
+                contagem[mercado]['red'] += 1
+
+    nomes = {
+        '05_HT': '+0,5 HT',
+        '15_HT': '+1,5 HT',
+        'LIMITE_FT': 'Limite FT',
+    }
+
+    linhas = [
+        '🐶 *FARO DE BEAGLE*',
+        '📊 *RELATÓRIO DO DIA*',
+        '━━━━━━━━━━━━━━━━━━',
+        '',
+        f'📅 {data_relatorio}',
+        '',
+        f'🚨 Alertas confirmados: {total}',
+        f'🟢 Greens: {greens}',
+        f'🔴 Reds: {reds}',
+        f'📈 Aproveitamento: {aproveitamento:.1f}%',
+        '',
+        '━━━━━━━━━━━━━━━━━━',
+    ]
+
+    for mercado in ('05_HT', '15_HT', 'LIMITE_FT'):
+        dados = contagem[mercado]
+        taxa = (dados['green'] / dados['total'] * 100) if dados['total'] else 0.0
+        linhas.extend([
+            '',
+            f"🔥 *{nomes[mercado]}*",
+            f"Alertas: {dados['total']}",
+            f"🟢 Green: {dados['green']}",
+            f"🔴 Red: {dados['red']}",
+            f"📊 Aproveitamento: {taxa:.1f}%",
+        ])
+
+    linhas.extend(['', '━━━━━━━━━━━━━━━━━━', '', '📋 *ALERTAS CONFIRMADOS*'])
+
+    if historico_diario:
+        for item in historico_diario:
+            marcador = '🟢' if item['resultado'] == 'GREEN' else '🔴'
+            partes = item['mensagem_original'].splitlines()
+            resumo = []
+            for linha in partes:
+                if (
+                    'FARO DE BEAGLE' in linha
+                    or 'Liga:' in linha
+                    or '🏆' in linha
+                    or ' x ' in linha
+                    or '⏱️' in linha
+                ):
+                    resumo.append(linha.replace('*', ''))
+            linhas.append(f"{marcador} " + " | ".join(resumo[:4]))
+    else:
+        linhas.append('Nenhum alerta confirmado no período.')
+
+    pendentes = list(alertas_pendentes.values())
+    if pendentes:
+        linhas.extend(['', '⏳ *ALERTAS AINDA EM ABERTO ÀS 02H*'])
+        for info in pendentes:
+            partes = info.get('mensagem_original', '').splitlines()
+            resumo = []
+            for linha in partes:
+                if (
+                    'FARO DE BEAGLE' in linha
+                    or 'Liga:' in linha
+                    or '🏆' in linha
+                    or ' x ' in linha
+                    or '⏱️' in linha
+                ):
+                    resumo.append(linha.replace('*', ''))
+            linhas.append('⏳ ' + ' | '.join(resumo[:4]))
+
+    linhas.extend([
+        '',
+        '━━━━━━━━━━━━━━━━━━',
+        '🐶 *FARO DE BEAGLE*',
+        '📊 Operação encerrada às 02:00.',
+    ])
+
+    mensagem_relatorio = '\n'.join(linhas)
+    message_id = enviar_alerta(mensagem_relatorio)
     if message_id:
         ultimo_relatorio_data = agora.date()
         relatorios_por_message_id[message_id] = mensagem_relatorio
@@ -1603,21 +1706,49 @@ def enviar_relatorio_diario():
 
 
 def atualizar_relatorio_pos_02h(info, resultado):
-    """Atualiza o mesmo relatório das 02h quando um alerta pendente é confirmado."""
+    """Atualiza o relatório das 02h quando um alerta que estava aberto é confirmado depois."""
     report_id = info.get('relatorio_message_id')
     if not report_id:
         return
 
-    nova = montar_relatorio_resumido()
-    editar_alerta(report_id, nova)
+    base = relatorios_por_message_id.get(report_id, info.get('relatorio_mensagem', ''))
+    if not base:
+        return
+
+    marcador = '🟢' if resultado == 'GREEN' else '🔴'
+    partes = info.get('mensagem_original', '').splitlines()
+    resumo = []
+    for linha in partes:
+        if (
+            'FARO DE BEAGLE' in linha
+            or 'Liga:' in linha
+            or '🏆' in linha
+            or ' x ' in linha
+            or '⏱️' in linha
+        ):
+            resumo.append(linha.replace('*', ''))
+
+    atualizacao = (
+        '\n\n━━━━━━━━━━━━━━━━━━\n'
+        '🔄 *ATUALIZAÇÃO PÓS-02H*\n'
+        f'{marcador} ' + ' | '.join(resumo[:4]) + '\n'
+        f'{marcador} Resultado confirmado: {resultado}'
+    )
+
+    nova = base + atualizacao
+    if editar_alerta(report_id, nova) is None:
+        # editar_alerta não retorna status; mantemos o texto local para futuras atualizações.
+        pass
     relatorios_por_message_id[report_id] = nova
 
 
+
 def validar_alertas_enviados(jogos_dict):
-    """Confirma Green/Red somente no momento correto de cada mercado."""
+    """Verifica o placar e edita o alerta apenas anexando os emojis de GREEN ou RED ao final."""
     chaves_para_remover = []
 
     for chave_alerta, info in list(alertas_pendentes.items()):
+
         event_id = info['event_id']
         message_id = info['message_id']
         gols_no_alerta = info['gols_alerta']
@@ -1625,64 +1756,125 @@ def validar_alertas_enviados(jogos_dict):
         msg_original = info['mensagem_original']
 
         item_jogo = jogos_dict.get(event_id)
+
         if not item_jogo:
             continue
 
-        gols_c = item_jogo.get('homeScore', {}).get('current', 0)
-        gols_f = item_jogo.get('awayScore', {}).get('current', 0)
+        gols_c = item_jogo.get(
+            'homeScore', {}
+        ).get(
+            'current',
+            0
+        )
+
+        gols_f = item_jogo.get(
+            'awayScore', {}
+        ).get(
+            'current',
+            0
+        )
+
         gols_atuais = gols_c + gols_f
 
-        status_desc = str(item_jogo.get('status', {}).get('description', '')).lower()
-        time_status = str(item_jogo.get('status', {}).get('type', '')).lower()
+        status_desc = str(
+            item_jogo.get('status', {})
+            .get('description', '')
+        ).lower()
+
+        time_status = str(
+            item_jogo.get('status', {})
+            .get('type', '')
+        ).lower()
 
         eh_intervalo = (
             'halftime' in status_desc
             or 'ht' in status_desc
             or time_status == 'halftime'
         )
+
+        eh_2h = (
+            '2nd' in status_desc
+            or time_status == '2nd'
+        )
+
         eh_finalizado = (
             time_status == 'finished'
             or 'ended' in status_desc
             or 'ft' in status_desc
+            or 'extra' in status_desc
         )
 
-        # HT: somente no intervalo. Nunca confirmar durante o 1º tempo,
-        # mesmo que tenha ocorrido um gol. Isso evita GREEN falso por VAR.
-        if mercado in ('05_HT', '15_HT'):
-            if not eh_intervalo and not eh_finalizado:
-                continue
+        if gols_atuais > gols_no_alerta:
 
-            if gols_atuais > gols_no_alerta:
-                resultado = 'GREEN'
-                simbolo = '✅️✅️✅️'
-            else:
-                resultado = 'RED'
-                simbolo = '❌️❌️❌️'
+            nova_mensagem = (
+                f"{msg_original}\n\n"
+                f"✅️✅️✅️"
+            )
 
-        # Limite FT: somente quando o jogo estiver oficialmente finalizado.
-        elif mercado == 'LIMITE_FT':
-            if not eh_finalizado:
-                continue
+            editar_alerta(
+                message_id,
+                nova_mensagem
+            )
 
-            if gols_atuais > gols_no_alerta:
-                resultado = 'GREEN'
-                simbolo = '✅️✅️✅️'
-            else:
-                resultado = 'RED'
-                simbolo = '❌️❌️❌️'
+            registrar_resultado_diario(info, 'GREEN')
+            if info.get('relatorio_message_id'):
+                atualizar_relatorio_pos_02h(info, 'GREEN')
+
+            chaves_para_remover.append(
+                chave_alerta
+            )
+
         else:
-            continue
 
-        editar_alerta(message_id, f"{msg_original}\n\n{simbolo}")
-        registrar_resultado_diario(info, resultado)
+            if mercado in ['05_HT', '15_HT'] and (
+                eh_intervalo
+                or eh_2h
+                or eh_finalizado
+            ):
 
-        if info.get('relatorio_message_id'):
-            atualizar_relatorio_pos_02h(info, resultado)
+                nova_mensagem = (
+                    f"{msg_original}\n\n"
+                    f"❌️❌️❌️"
+                )
 
-        chaves_para_remover.append(chave_alerta)
+                editar_alerta(
+                    message_id,
+                    nova_mensagem
+                )
+
+                registrar_resultado_diario(info, 'RED')
+                if info.get('relatorio_message_id'):
+                    atualizar_relatorio_pos_02h(info, 'RED')
+
+                chaves_para_remover.append(
+                    chave_alerta
+                )
+
+            elif mercado == 'LIMITE_FT' and eh_finalizado:
+
+                nova_mensagem = (
+                    f"{msg_original}\n\n"
+                    f"❌️❌️❌️"
+                )
+
+                editar_alerta(
+                    message_id,
+                    nova_mensagem
+                )
+
+                registrar_resultado_diario(info, 'RED')
+                if info.get('relatorio_message_id'):
+                    atualizar_relatorio_pos_02h(info, 'RED')
+
+                chaves_para_remover.append(
+                    chave_alerta
+                )
 
     for ch in chaves_para_remover:
-        alertas_pendentes.pop(ch, None)
+        alertas_pendentes.pop(
+            ch,
+            None
+        )
 
 
 def obter_evento_sofascore(event_id):
@@ -2042,28 +2234,16 @@ def checar_jogos_ao_vivo():
                         pressao
                     )
 
-                    prelive_info = analisar_prelive_por_mercado(
-                        event_id,
-                        item.get('homeTeam', {}).get('id'),
-                        item.get('awayTeam', {}).get('id'),
-                        '05_HT',
-                        total_gols
+                    contexto_gol = avaliar_propensao_gol(
+                        '05_HT', gols_c, gols_f, xg_tot,
+                        fin_h_int, fin_a_int, cg_h_int, cg_a_int,
+                        int(gc_h), int(gc_a), pressao,
+                        classificar_intensidade(
+                            pressao, fin_tot, chutes_gol, grandes_chances
+                        )
                     )
 
-                    confianca_pre = calcular_confianca_independente(
-                        '05_HT', xg_tot, fin_tot, chutes_gol, grandes_chances,
-                        pressao,
-                        classificar_intensidade(pressao, fin_tot, chutes_gol, grandes_chances),
-                        classificar_qualidade(xg_tot, chutes_gol, grandes_chances),
-                        prelive_info
-                    )
-
-                    aprovado = aprovado and confianca_pre >= 7.0 and avaliar_seletividade(
-                        '05_HT', score, xg_tot, fin_tot, chutes_gol, grandes_chances,
-                        escanteios, pressao, prelive_info, total_gols
-                    )
-
-                    if aprovado:
+                    if aprovado and contexto_gol['aprovado']:
                         notificados_05_ht.add(event_id)
 
                         mensagem = montar_layout_alerta(
@@ -2091,7 +2271,13 @@ def checar_jogos_ao_vivo():
                             esc_h_int,
                             esc_a_int,
                             pressao,
-                            prelive_info
+                            analisar_prelive_por_mercado(
+                                event_id,
+                                item.get('homeTeam', {}).get('id'),
+                                item.get('awayTeam', {}).get('id'),
+                                '05_HT',
+                                total_gols
+                            )
                         )
 
                         msg_id = enviar_alerta(mensagem)
@@ -2122,28 +2308,16 @@ def checar_jogos_ao_vivo():
                         pressao
                     )
 
-                    prelive_info = analisar_prelive_por_mercado(
-                        event_id,
-                        item.get('homeTeam', {}).get('id'),
-                        item.get('awayTeam', {}).get('id'),
-                        '15_HT',
-                        total_gols
+                    contexto_gol = avaliar_propensao_gol(
+                        '15_HT', gols_c, gols_f, xg_tot,
+                        fin_h_int, fin_a_int, cg_h_int, cg_a_int,
+                        int(gc_h), int(gc_a), pressao,
+                        classificar_intensidade(
+                            pressao, fin_tot, chutes_gol, grandes_chances
+                        )
                     )
 
-                    confianca_pre = calcular_confianca_independente(
-                        '15_HT', xg_tot, fin_tot, chutes_gol, grandes_chances,
-                        pressao,
-                        classificar_intensidade(pressao, fin_tot, chutes_gol, grandes_chances),
-                        classificar_qualidade(xg_tot, chutes_gol, grandes_chances),
-                        prelive_info
-                    )
-
-                    aprovado = aprovado and confianca_pre >= 7.2 and avaliar_seletividade(
-                        '15_HT', score, xg_tot, fin_tot, chutes_gol, grandes_chances,
-                        escanteios, pressao, prelive_info, total_gols
-                    )
-
-                    if aprovado:
+                    if aprovado and contexto_gol['aprovado']:
                         notificados_15_ht.add(event_id)
 
                         mensagem = montar_layout_alerta(
@@ -2171,7 +2345,13 @@ def checar_jogos_ao_vivo():
                             esc_h_int,
                             esc_a_int,
                             pressao,
-                            prelive_info
+                            analisar_prelive_por_mercado(
+                                event_id,
+                                item.get('homeTeam', {}).get('id'),
+                                item.get('awayTeam', {}).get('id'),
+                                '15_HT',
+                                total_gols
+                            )
                         )
 
                         msg_id = enviar_alerta(mensagem)
@@ -2206,28 +2386,16 @@ def checar_jogos_ao_vivo():
                         pressao
                     )
 
-                    prelive_info = analisar_prelive_por_mercado(
-                        event_id,
-                        item.get('homeTeam', {}).get('id'),
-                        item.get('awayTeam', {}).get('id'),
-                        'LIMITE_FT',
-                        total_gols
+                    contexto_gol = avaliar_propensao_gol(
+                        'LIMITE_FT', gols_c, gols_f, xg_tot,
+                        fin_h_int, fin_a_int, cg_h_int, cg_a_int,
+                        int(gc_h), int(gc_a), pressao,
+                        classificar_intensidade(
+                            pressao, fin_tot, chutes_gol, grandes_chances
+                        )
                     )
 
-                    confianca_pre = calcular_confianca_independente(
-                        'LIMITE_FT', xg_tot, fin_tot, chutes_gol, grandes_chances,
-                        pressao,
-                        classificar_intensidade(pressao, fin_tot, chutes_gol, grandes_chances),
-                        classificar_qualidade(xg_tot, chutes_gol, grandes_chances),
-                        prelive_info
-                    )
-
-                    aprovado = aprovado and confianca_pre >= 7.2 and avaliar_seletividade(
-                        'LIMITE_FT', score, xg_tot, fin_tot, chutes_gol, grandes_chances,
-                        escanteios, pressao, prelive_info, total_gols
-                    )
-
-                    if aprovado:
+                    if aprovado and contexto_gol['aprovado']:
                         notificados_limite_ft.add(event_id)
 
                         mensagem = montar_layout_alerta(
@@ -2255,7 +2423,13 @@ def checar_jogos_ao_vivo():
                             esc_h_int,
                             esc_a_int,
                             pressao,
-                            prelive_info
+                            analisar_prelive_por_mercado(
+                                event_id,
+                                item.get('homeTeam', {}).get('id'),
+                                item.get('awayTeam', {}).get('id'),
+                                'LIMITE_FT',
+                                total_gols
+                            )
                         )
 
                         msg_id = enviar_alerta(mensagem)

@@ -1,12 +1,12 @@
 import time
 import cloudscraper
-from datetime import datetime
+from datetime import datetime, timedelta
 import zoneinfo
 
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAEm4h212tRP1DI_8h2XJbXKzRzhNZUa62g'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -1597,7 +1597,11 @@ def enviar_relatorio_diario():
     if ultimo_relatorio_data == agora.date():
         return
 
-    data_relatorio = agora.strftime('%d/%m/%Y')
+    # O relatório pertence ao ciclo operacional que começou às 08h.
+    # Portanto, quando ele é enviado às 02h, o período começou no dia anterior.
+    inicio_operacao = agora.date() - timedelta(days=1)
+    data_inicio = inicio_operacao.strftime('%d/%m/%Y')
+    data_fim = agora.strftime('%d/%m/%Y')
     total = len(historico_diario)
     greens = sum(1 for item in historico_diario if item['resultado'] == 'GREEN')
     reds = sum(1 for item in historico_diario if item['resultado'] == 'RED')
@@ -1626,10 +1630,10 @@ def enviar_relatorio_diario():
 
     linhas = [
         '🐶 *FARO DE BEAGLE*',
-        '📊 *RELATÓRIO DO DIA*',
+        '📊 *RELATÓRIO DA OPERAÇÃO*',
         '━━━━━━━━━━━━━━━━━━',
         '',
-        f'📅 {data_relatorio}',
+        f'📅 Período: {data_inicio} 08h às {data_fim} 02h',
         '',
         f'🚨 Alertas confirmados: {total}',
         f'🟢 Greens: {greens}',

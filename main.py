@@ -1,12 +1,12 @@
 import time
 import cloudscraper
-from datetime import datetime, timedelta
+from datetime import datetime
 import zoneinfo
 
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAEm4h212tRP1DI_8h2XJbXKzRzhNZUa62g'
+TELEGRAM_TOKEN = 'COLOQUE_AQUI_SEU_NOVO_TOKEN'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -37,62 +37,6 @@ scraper = cloudscraper.create_scraper(
     }
 )
 
-# Camada de acesso ao SofaScore com headers XHR e fallback de domínio.
-# Mantém o restante do funcionamento do bot inalterado.
-SOFASCORE_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Referer': 'https://www.sofascore.com/',
-    'Origin': 'https://www.sofascore.com',
-    'X-Requested-With': 'XMLHttpRequest',
-}
-
-# Ordem de acesso: API principal -> proxy do próprio site -> espelho.
-# O api.sofascore.app está retornando 404 para os endpoints usados pelo bot,
-# portanto ele foi removido da rota de fallback.
-SOFASCORE_BASES = [
-    'https://api.sofascore.com/api/v1',
-    'https://www.sofascore.com/api/v1',
-]
-
-def sofascore_get(path, timeout=10):
-    path = path.lstrip('/')
-    ultimo_status = None
-
-    for base in SOFASCORE_BASES:
-        url = f'{base}/{path}'
-        try:
-            res = scraper.get(
-                url,
-                headers=SOFASCORE_HEADERS,
-                timeout=timeout
-            )
-            ultimo_status = res.status_code
-
-            if res.status_code == 200:
-                return res
-
-            # 404 em endpoints individuais do SofaScore é esperado em
-            # alguns eventos/dados indisponíveis. Não imprimir cada 404
-            # evita saturar os logs do Railway.
-            if res.status_code != 404:
-                print(
-                    f'SofaScore {url}: status {res.status_code}'
-                )
-
-        except Exception as e:
-            print(f'Erro SofaScore {url}: {e}')
-
-    # Não gerar uma linha de log para cada endpoint que simplesmente
-    # respondeu 404. Erros diferentes de 404 continuam visíveis.
-    if ultimo_status is not None and ultimo_status != 404:
-        print(
-            f'SofaScore: nenhuma rota respondeu 200 para {path} '
-            f'(último status: {ultimo_status})'
-        )
-
-    return None
-
 # Registros para evitar repetição do mesmo alerta
 notificados_05_ht = set()
 notificados_15_ht = set()
@@ -100,12 +44,6 @@ notificados_limite_ft = set()
 
 # Dicionário de acompanhamento dos alertas enviados para validação do resultado
 alertas_pendentes = {}
-
-# Histórico dos resultados confirmados no dia, usado no relatório diário.
-historico_diario = []
-ultimo_relatorio_data = None
-ultima_data_historico = None
-relatorios_por_message_id = {}
 
 
 def obter_horario_brasil():
@@ -146,7 +84,14 @@ def editar_alerta(message_id, nova_mensagem):
     }
 
     try:
-        scraper.post(url, json=payload, timeout=10)
+        res = scraper.post(url, json=payload, timeout=10)
+
+        if res.status_code != 200:
+            print(f"Erro ao editar mensagem Telegram: {res.status_code} - {res.text[:500]}")
+        else:
+            dados = res.json()
+            if not dados.get('ok', False):
+                print(f"Telegram recusou edição da mensagem: {dados}")
 
     except Exception as e:
         print(f"Erro ao editar mensagem Telegram: {e}")
@@ -156,7 +101,7 @@ def obter_estatisticas_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
 
     try:
-        res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
+        res = scraper.get(url, timeout=10)
 
         if res.status_code == 200:
             return res.json().get('statistics', [])
@@ -171,7 +116,7 @@ def obter_prelive_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/prematch-form"
 
     try:
-        res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
+        res = scraper.get(url, timeout=10)
 
         if res.status_code == 200:
             return res.json()
@@ -182,155 +127,11 @@ def obter_prelive_sofascore(event_id):
     return None
 
 
-def analisar_prelive_por_mercado(event_id, home_team_id, away_team_id, mercado, total_gols_atual):
-    """Analisa o pré-live de acordo com o mercado do alerta.
-
-    Usa a forma pré-jogo e os últimos jogos das duas equipes como confirmação
-    secundária. O resultado serve apenas para ajustar a Confiança; não bloqueia
-    nem libera o alerta.
-    """
-    try:
-        form = obter_prelive_sofascore(event_id)
-
-        ids = [home_team_id, away_team_id]
-        jogos = []
-
-        for team_id in ids:
-            if not team_id:
-                continue
-
-            url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
-            res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
-
-            if res.status_code != 200:
-                continue
-
-            eventos = res.json().get('events', [])
-            jogos.extend(eventos[:5])
-
-        if not jogos:
-            return {
-                'ajuste': 0.0,
-                'status': 'SEM DADOS',
-                'detalhe': ''
-            }
-
-        # Remove duplicados.
-        unicos = {}
-        for jogo in jogos:
-            if jogo.get('id'):
-                unicos[jogo['id']] = jogo
-        jogos = list(unicos.values())
-
-        primeiros_gols = []
-        totais = []
-
-        for jogo in jogos:
-            hs = jogo.get('homeScore', {})
-            aws = jogo.get('awayScore', {})
-
-            total = hs.get('current')
-            if total is None or aws.get('current') is None:
-                continue
-
-            total = int(total) + int(aws.get('current', 0))
-            totais.append(total)
-
-            h1 = hs.get('period1')
-            a1 = aws.get('period1')
-
-            if h1 is not None and a1 is not None:
-                primeiros_gols.append(int(h1) + int(a1))
-
-        # Forma pré-live também funciona como desempate secundário.
-        form_values = []
-        for lado in ('homeTeam', 'awayTeam'):
-            dados = (form or {}).get(lado, {})
-            forma = dados.get('form', [])
-            if isinstance(forma, list):
-                form_values.extend(forma)
-
-        positivos_forma = sum(1 for x in form_values if x in ('W', 'D'))
-        taxa_forma = (
-            positivos_forma / len(form_values)
-            if form_values else 0
-        )
-
-        ajuste = 0.0
-        status = 'NEUTRO'
-        detalhe = ''
-
-        if mercado == '05_HT':
-            if primeiros_gols:
-                taxa = sum(g >= 1 for g in primeiros_gols) / len(primeiros_gols)
-                if taxa >= 0.70:
-                    ajuste = 0.35
-                    status = 'FAVORÁVEL'
-                elif taxa < 0.40:
-                    ajuste = -0.25
-                    status = 'DESFAVORÁVEL'
-                else:
-                    ajuste = 0.05
-                    status = 'NEUTRO'
-                detalhe = f'{taxa*100:.0f}% com gol no 1º tempo'
-
-        elif mercado == '15_HT':
-            if primeiros_gols:
-                taxa = sum(g >= 2 for g in primeiros_gols) / len(primeiros_gols)
-                if taxa >= 0.50:
-                    ajuste = 0.40
-                    status = 'FAVORÁVEL'
-                elif taxa < 0.25:
-                    ajuste = -0.30
-                    status = 'DESFAVORÁVEL'
-                else:
-                    ajuste = 0.05
-                    status = 'NEUTRO'
-                detalhe = f'{taxa*100:.0f}% com 2+ gols no 1º tempo'
-
-        elif mercado == 'LIMITE_FT':
-            linha = total_gols_atual + 0.5
-            if totais:
-                taxa = sum(g > total_gols_atual for g in totais) / len(totais)
-
-                if taxa >= 0.60:
-                    ajuste = 0.45
-                    status = 'FAVORÁVEL'
-                elif taxa < 0.30:
-                    ajuste = -0.35
-                    status = 'DESFAVORÁVEL'
-                else:
-                    ajuste = 0.05
-                    status = 'NEUTRO'
-
-                detalhe = (
-                    f'{taxa*100:.0f}% dos últimos jogos superaram '
-                    f'{linha:.1f} gols'
-                )
-
-        # Forma geral entra apenas como desempate muito pequeno.
-        if status == 'NEUTRO' and taxa_forma >= 0.70:
-            ajuste += 0.10
-
-        return {
-            'ajuste': ajuste,
-            'status': status,
-            'detalhe': detalhe
-        }
-
-    except Exception:
-        return {
-            'ajuste': 0.0,
-            'status': 'SEM DADOS',
-            'detalhe': ''
-        }
-
-
 def obter_pressao_grafico_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/graph"
 
     try:
-        res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
+        res = scraper.get(url, timeout=10)
 
         if res.status_code == 200:
 
@@ -445,6 +246,211 @@ def obter_pressao_grafico_sofascore(event_id):
         'direcao': 0,
         'texto': ''
     }
+
+
+
+def obter_incidentes_sofascore(event_id):
+    """Busca incidentes do jogo para detectar cartões vermelhos e outros eventos contextuais."""
+    url = f"https://api.sofascore.com/api/v1/event/{event_id}/incidents"
+    try:
+        res = scraper.get(url, timeout=10)
+        if res.status_code == 200:
+            return res.json().get('incidents', [])
+    except Exception:
+        pass
+    return []
+
+
+def extrair_cartoes_vermelhos(incidentes):
+    """Retorna vermelhos diretos/segundos amarelos por lado."""
+    vermelhos_casa = 0
+    vermelhos_fora = 0
+
+    for inc in incidentes or []:
+        tipo = str(inc.get('incidentType', '')).lower()
+        classe = str(inc.get('incidentClass', '')).lower()
+        is_red = (
+            'red' in tipo or 'red' in classe or
+            'secondyellow' in classe or 'second yellow' in classe or
+            'secondyellow' in tipo or 'second yellow' in tipo
+        )
+        if not is_red:
+            continue
+
+        is_home = inc.get('isHome')
+        if is_home is True:
+            vermelhos_casa += 1
+        elif is_home is False:
+            vermelhos_fora += 1
+
+    return vermelhos_casa, vermelhos_fora
+
+
+def calcular_contexto_proximo_gol(
+    mercado,
+    gols_c,
+    gols_f,
+    minuto,
+    fin_h,
+    fin_a,
+    chutes_h,
+    chutes_a,
+    grandes_h,
+    grandes_a,
+    pressao,
+    vermelhos_casa=0,
+    vermelhos_fora=0,
+):
+    """
+    Camada contextual do FARO.
+
+    Não substitui os filtros estatísticos existentes. Ajusta a decisão para
+    responder à pergunta: "o contexto atual favorece a busca pelo próximo gol?"
+
+    Importante: no início de temporada NÃO penaliza 0x0 por suposta falta de
+    necessidade de resultado. Sem informação confiável de favorito/odds, o
+    parâmetro favorito permanece neutro.
+    """
+    pontos = 0
+    motivos = []
+
+    total_gols = gols_c + gols_f
+    intensidade = pressao.get('aceleracao', 0)
+
+    # ------------------------------------------------------------------
+    # 1) Equipe atrás do placar e produzindo.
+    # ------------------------------------------------------------------
+    if gols_c > gols_f:
+        perdendo_fin = fin_a
+        perdendo_alvo = chutes_a
+        perdendo_gc = grandes_a
+        lado_perdendo = 'fora'
+    elif gols_f > gols_c:
+        perdendo_fin = fin_h
+        perdendo_alvo = chutes_h
+        perdendo_gc = grandes_h
+        lado_perdendo = 'casa'
+    else:
+        perdendo_fin = 0
+        perdendo_alvo = 0
+        perdendo_gc = 0
+        lado_perdendo = None
+
+    if lado_perdendo:
+        sinais_perdendo = 0
+        if perdendo_fin >= 6:
+            sinais_perdendo += 1
+        if perdendo_alvo >= 2:
+            sinais_perdendo += 1
+        if perdendo_gc >= 1:
+            sinais_perdendo += 1
+
+        if sinais_perdendo >= 2:
+            pontos += 2
+            motivos.append('equipe atrás do placar produzindo')
+        elif sinais_perdendo == 1:
+            pontos += 1
+
+    # ------------------------------------------------------------------
+    # 2) Jogo empatado com produção dos dois lados.
+    # Não presume necessidade extra em 0x0; apenas recompensa jogo aberto.
+    # ------------------------------------------------------------------
+    if gols_c == gols_f:
+        maior_fin = max(fin_h, fin_a)
+        menor_fin = min(fin_h, fin_a)
+        equilibrio = (menor_fin / maior_fin) if maior_fin > 0 else 0
+
+        if equilibrio >= 0.50 and (chutes_h + chutes_a) >= 4:
+            pontos += 1
+            motivos.append('empate com produção dos dois lados')
+
+        if (grandes_h + grandes_a) >= 2 and equilibrio >= 0.40:
+            pontos += 1
+
+    # ------------------------------------------------------------------
+    # 3) Expulsão: superioridade numérica aumenta a relevância do contexto.
+    # ------------------------------------------------------------------
+    if vermelhos_casa or vermelhos_fora:
+        if gols_c == gols_f:
+            pontos += 2
+            motivos.append('superioridade numérica após expulsão')
+        elif gols_c > gols_f and vermelhos_fora:
+            pontos += 2
+            motivos.append('equipe vencendo em superioridade numérica')
+        elif gols_f > gols_c and vermelhos_casa:
+            pontos += 2
+            motivos.append('equipe vencendo em superioridade numérica')
+        else:
+            # Mesmo com a equipe atrás tendo um expulso, não damos bônus.
+            # Isso evita tratar qualquer cartão vermelho como automaticamente bom.
+            pontos -= 1
+
+    # ------------------------------------------------------------------
+    # 4) Pressão recente acelerando: confirma que o contexto não está apenas
+    # acumulando estatísticas antigas.
+    # ------------------------------------------------------------------
+    if intensidade >= 8:
+        pontos += 2
+        motivos.append('pressão recente acelerando')
+    elif intensidade >= 4:
+        pontos += 1
+
+    # ------------------------------------------------------------------
+    # 5) Jogo muito desequilibrado em produção: não é automaticamente ruim,
+    # mas exige mais qualidade para evitar que volume de um lado seja confundido
+    # com probabilidade de próximo gol.
+    # ------------------------------------------------------------------
+    maior = max(fin_h, fin_a)
+    menor = min(fin_h, fin_a)
+    if maior >= 10 and menor / maior < 0.25:
+        if (chutes_h + chutes_a) < 4 or (grandes_h + grandes_a) == 0:
+            pontos -= 1
+            motivos.append('produção muito concentrada em um lado')
+
+    # Limites conservadores: contexto é ajuste, não substituto do filtro.
+    if mercado == '05_HT':
+        minimo = 0
+    elif mercado == '15_HT':
+        minimo = 0
+    else:
+        minimo = 0
+
+    return max(-2, min(4, pontos)), motivos[:3]
+
+
+def aplicar_contexto_ao_score(
+    score,
+    mercado,
+    gols_c,
+    gols_f,
+    minuto,
+    fin_h,
+    fin_a,
+    chutes_h,
+    chutes_a,
+    grandes_h,
+    grandes_a,
+    pressao,
+    vermelhos_casa=0,
+    vermelhos_fora=0,
+):
+    """Aplica o ajuste contextual ao score interno sem alterar a escala exibida."""
+    ajuste, motivos_contexto = calcular_contexto_proximo_gol(
+        mercado,
+        gols_c,
+        gols_f,
+        minuto,
+        fin_h,
+        fin_a,
+        chutes_h,
+        chutes_a,
+        grandes_h,
+        grandes_a,
+        pressao,
+        vermelhos_casa,
+        vermelhos_fora,
+    )
+    return score + ajuste, ajuste, motivos_contexto
 
 
 def extrair_stat_sofascore(stats_data, item_name):
@@ -683,133 +689,6 @@ def calcular_equilibrio(
         return 1
 
     return 0
-
-
-\
-def avaliar_propensao_gol(
-    mercado,
-    gols_c,
-    gols_f,
-    xg_tot,
-    fin_h,
-    fin_a,
-    chutes_h,
-    chutes_a,
-    gc_h,
-    gc_a,
-    pressao,
-    intensidade
-):
-    """
-    Camada final de PROPENSÃO AO GOL.
-    O Goal Score continua intacto; esta função avalia o contexto atual:
-    placar, equipe atrás, produção de cada lado e pressão recente.
-    Não presume necessidade de resultado pela tabela, pois o bot não
-    consulta classificação/objetivo competitivo nesta versão.
-    """
-    pontos = 0
-    motivos = []
-
-    total_fin = fin_h + fin_a
-    total_chutes = chutes_h + chutes_a
-    total_gc = gc_h + gc_a
-    diferenca = abs(gols_c - gols_f)
-
-    recente = pressao.get('recente', 0)
-    aceleracao = pressao.get('aceleracao', 0)
-
-    if aceleracao <= -6:
-        pontos -= 1
-        motivos.append('intensidade recente em queda')
-
-    # HT: confirmação de que o jogo continua vivo.
-    if mercado in ('05_HT', '15_HT'):
-        if recente >= 30:
-            pontos += 1
-            motivos.append('pressão recente suficiente')
-        elif recente < 20 and aceleracao < 0:
-            pontos -= 1
-
-        if xg_tot >= 0.70 or total_gc >= 2 or total_chutes >= 3:
-            pontos += 1
-
-        if total_fin >= 8 or total_chutes >= 4:
-            pontos += 1
-
-        aprovado = pontos >= 1
-        return {
-            'aprovado': aprovado,
-            'pontos': pontos,
-            'nivel': 'ALTA' if pontos >= 2 else ('MÉDIA' if pontos >= 1 else 'BAIXA'),
-            'motivos': motivos
-        }
-
-    # FT: pergunta primeiro se existe contexto para um próximo gol.
-    if diferenca == 0:
-        if recente >= 30 or aceleracao >= 6:
-            pontos += 2
-            motivos.append('jogo empatado com pressão atual')
-        elif recente >= 20:
-            pontos += 1
-
-        if xg_tot >= 1.50:
-            pontos += 1
-        if total_chutes >= 5 or total_gc >= 2:
-            pontos += 1
-
-    elif diferenca == 1:
-        if gols_c < gols_f:
-            fin_trailing, shots_trailing = fin_h, chutes_h
-            gc_trailing = gc_h
-        else:
-            fin_trailing, shots_trailing = fin_a, chutes_a
-            gc_trailing = gc_a
-
-        share_fin = fin_trailing / total_fin if total_fin else 0
-        share_shots = shots_trailing / total_chutes if total_chutes else 0
-        share_gc = gc_trailing / total_gc if total_gc else 0
-
-        if share_fin >= 0.40 or share_shots >= 0.40 or share_gc >= 0.50:
-            pontos += 2
-            motivos.append('equipe atrás do placar está produzindo')
-        elif share_fin < 0.30 and share_shots < 0.30 and gc_trailing == 0:
-            pontos -= 2
-            motivos.append('equipe atrás do placar produz pouco')
-
-        if aceleracao <= -6 and share_shots < 0.40:
-            pontos -= 1
-            motivos.append('pressão não sustenta reação')
-
-        if recente >= 30:
-            pontos += 1
-        elif recente < 20 and aceleracao < 0:
-            pontos -= 1
-
-    else:
-        pontos -= 2
-        motivos.append('vantagem de dois ou mais gols')
-
-    if mercado == 'LIMITE_FT':
-        if recente >= 35:
-            pontos += 1
-        if aceleracao >= 6:
-            pontos += 1
-
-    # Para o limite FT, a entrada só passa quando há evidência contextual
-    # suficiente de que um novo gol continua plausível.
-    if mercado == 'LIMITE_FT' and (gols_c + gols_f) == 1:
-        aprovado = pontos >= 2
-    elif mercado == 'LIMITE_FT':
-        aprovado = pontos >= 1
-    else:
-        aprovado = pontos >= 1
-
-    return {
-        'aprovado': aprovado,
-        'pontos': pontos,
-        'nivel': 'ALTA' if pontos >= 3 else ('MÉDIA' if pontos >= 1 else 'BAIXA'),
-        'motivos': motivos
-    }
 
 
 def calcular_score_05_ht(
@@ -1329,98 +1208,131 @@ def classificar_qualidade(xg_tot, chutes_gol, grandes_chances):
 
 def calcular_confianca_independente(
     mercado,
+    minutagem,
     xg_tot,
     fin_tot,
     chutes_gol,
+    escanteios,
     grandes_chances,
+    fin_h,
+    fin_a,
     pressao,
-    intensidade,
-    qualidade,
-    prelive_info=None,
 ):
-    """Calcula a Confiança de forma independente do GOAL SCORE.
-
-    A confiança usa somente os sinais qualitativos/estatísticos do jogo,
-    com pesos próprios, e não reutiliza o score interno do filtro.
     """
-    pontos = 4.0
+    Calcula a CONFIANÇA do alerta de forma independente do GOAL SCORE.
 
-    # xG
-    if xg_tot >= 1.20:
-        pontos += 1.5
-    elif xg_tot >= 0.90:
-        pontos += 1.2
-    elif xg_tot >= 0.60:
-        pontos += 0.8
-    elif xg_tot >= 0.40:
-        pontos += 0.4
+    O Goal Score mede força/volume ofensivo acumulado.
+    A Confiança mede a convergência dos sinais para o mercado específico.
+    Não utiliza o score interno nem o GOAL SCORE como entrada.
+    """
 
-    # Chutes no alvo
-    if chutes_gol >= 6:
-        pontos += 1.2
-    elif chutes_gol >= 4:
-        pontos += 0.9
-    elif chutes_gol >= 3:
-        pontos += 0.6
-    elif chutes_gol >= 2:
-        pontos += 0.3
+    try:
+        minuto = int(str(minutagem).split("'")[0])
+    except (ValueError, IndexError):
+        minuto = 45
 
-    # Grandes chances
-    if grandes_chances >= 3:
-        pontos += 1.0
-    elif grandes_chances >= 2:
-        pontos += 0.8
-    elif grandes_chances >= 1:
-        pontos += 0.4
+    recente = max(0.0, float(pressao.get('recente', 0)))
+    pico = max(0.0, float(pressao.get('pico', 0)))
+    aceleracao = float(pressao.get('aceleracao', 0))
 
-    # Volume geral
-    if fin_tot >= 14:
-        pontos += 0.7
-    elif fin_tot >= 10:
-        pontos += 0.5
-    elif fin_tot >= 7:
-        pontos += 0.3
+    # Limita cada componente entre 0 e 1.
+    def saturar(valor, alvo):
+        if alvo <= 0:
+            return 0.0
+        return max(0.0, min(1.0, float(valor) / float(alvo)))
 
-    # Pressão
-    recente = pressao.get('recente', 0)
-    pico = pressao.get('pico', 0)
-    aceleracao = pressao.get('aceleracao', 0)
+    # Produção dos dois lados: útil como confirmação, mas não obrigatória.
+    maior = max(fin_h, fin_a)
+    menor = min(fin_h, fin_a)
+    equilibrio = (menor / maior) if maior > 0 else 0.0
 
-    if recente >= 45 or pico >= 60:
-        pontos += 0.8
-    elif recente >= 30 or pico >= 45:
-        pontos += 0.5
-    elif recente >= 20 or pico >= 30:
-        pontos += 0.3
-
-    if aceleracao >= 8:
-        pontos += 0.4
-    elif aceleracao >= 4:
-        pontos += 0.2
-
-    # Qualidade e intensidade entram como fatores independentes.
-    if qualidade == 'ALTA':
-        pontos += 0.4
-    elif qualidade == 'MÉDIA':
-        pontos += 0.2
-
-    if intensidade == 'CRESCENTE':
-        pontos += 0.4
-    elif intensidade == 'ALTA':
-        pontos += 0.2
-
-    # Ajustes pequenos por mercado, sem usar o GOAL SCORE.
     if mercado == '05_HT':
-        pontos += 0.1
+        # +0,5 HT: prioridade para qualidade imediata e pressão.
+        componentes = [
+            (saturar(xg_tot, 0.70), 30),
+            (saturar(chutes_gol, 4), 25),
+            (saturar(grandes_chances, 2), 20),
+            (saturar(recente, 40), 15),
+            (saturar(fin_tot, 10), 5),
+            (saturar(escanteios, 5), 5),
+        ]
+        alvos = (xg_tot >= 0.55, chutes_gol >= 3, grandes_chances >= 1,
+                 recente >= 30 or pico >= 40)
+        minimo_convergencia = 3
+
     elif mercado == '15_HT':
-        pontos += 0.0
-    elif mercado == 'LIMITE_FT':
-        pontos -= 0.1
+        # +1,5 HT: exige maior convergência porque ainda falta outro gol.
+        componentes = [
+            (saturar(xg_tot, 1.00), 30),
+            (saturar(chutes_gol, 4), 22),
+            (saturar(grandes_chances, 2), 18),
+            (saturar(recente, 45), 15),
+            (saturar(fin_tot, 11), 5),
+            (saturar(escanteios, 5), 5),
+            (equilibrio, 5),
+        ]
+        alvos = (xg_tot >= 0.80, chutes_gol >= 3, grandes_chances >= 1,
+                 recente >= 30 or pico >= 40, fin_tot >= 8)
+        minimo_convergencia = 3
 
-    if prelive_info:
-        pontos += float(prelive_info.get('ajuste', 0.0))
+    else:
+        # Limite FT: peso maior para produção acumulada e pressão do 2º tempo.
+        componentes = [
+            (saturar(xg_tot, 1.70), 28),
+            (saturar(chutes_gol, 7), 22),
+            (saturar(grandes_chances, 3), 18),
+            (saturar(recente, 50), 17),
+            (saturar(fin_tot, 18), 8),
+            (saturar(escanteios, 8), 4),
+            (saturar(max(aceleracao, 0), 12), 3),
+        ]
+        alvos = (xg_tot >= 1.30, chutes_gol >= 5, grandes_chances >= 2,
+                 recente >= 35 or pico >= 50, fin_tot >= 14)
+        minimo_convergencia = 3
 
-    return max(0.0, min(10.0, round(pontos, 1)))
+    base = sum(valor * peso for valor, peso in componentes)
+
+    # Bônus por convergência de sinais. Isso diferencia confiança de volume puro.
+    sinais_fortes = sum(1 for sinal in alvos if sinal)
+    if sinais_fortes >= 4:
+        base += 7
+    elif sinais_fortes >= minimo_convergencia:
+        base += 4
+
+    # Pressão em aceleração aumenta a confiabilidade; queda forte reduz.
+    if aceleracao >= 8:
+        base += 4
+    elif aceleracao >= 4:
+        base += 2
+    elif aceleracao <= -8:
+        base -= 5
+    elif aceleracao <= -4:
+        base -= 2
+
+    # Para HT, equilíbrio é uma confirmação extra, não um requisito.
+    if mercado in ('05_HT', '15_HT') and equilibrio >= 0.50:
+        base += 3
+
+    # Evita confiança artificialmente alta quando os principais sinais estão fracos.
+    principais_fracos = (
+        xg_tot < (0.35 if mercado == '05_HT' else 0.55 if mercado == '15_HT' else 0.90)
+        and chutes_gol < (2 if mercado != 'LIMITE_FT' else 3)
+        and grandes_chances == 0
+    )
+    if principais_fracos:
+        base -= 8
+
+    # Pequeno ajuste temporal: dentro da janela do filtro, o ponto mais tardio
+    # é ligeiramente mais informativo, sem transformar minuto em score.
+    if mercado == '05_HT' and minuto >= 22:
+        base += 2
+    elif mercado == '15_HT' and minuto >= 25:
+        base += 2
+    elif mercado == 'LIMITE_FT' and minuto >= 72:
+        base += 2
+
+    confianca = max(0.0, min(10.0, base / 10.0))
+    return round(confianca, 1)
 
 
 def montar_motivos_exibicao(
@@ -1506,7 +1418,6 @@ def montar_layout_alerta(
     esc_h,
     esc_a,
     pressao,
-    prelive_info=None,
 ):
     """Gera o layout padrão Faro de Beagle."""
     score_100 = normalizar_score_100(score, mercado)
@@ -1519,14 +1430,15 @@ def montar_layout_alerta(
     )
     confianca = calcular_confianca_independente(
         mercado,
+        minutagem,
         xg_tot,
         fin_tot,
         chutes_gol,
+        escanteios,
         grandes_chances,
+        fin_h,
+        fin_a,
         pressao,
-        intensidade,
-        qualidade,
-        prelive_info,
     )
 
     motivos = montar_motivos_exibicao(
@@ -1559,7 +1471,7 @@ def montar_layout_alerta(
     mensagem = (
         f'🐶 *FARO DE BEAGLE*\n'
         f'{titulo}\n\n'
-        f'🏆 *Liga:* {liga}\n'
+        f'🏆 *Liga:* {liga}\n\n'
         f'{time_casa} x {time_fora}\n'
         f'⏱️ {minutagem} — {gols_c}x{gols_f}\n\n'
         f'📊 *GOAL SCORE: {score_100}/100*\n\n'
@@ -1581,172 +1493,6 @@ def montar_layout_alerta(
     return mensagem
 
 
-def registrar_resultado_diario(info, resultado):
-    historico_diario.append({
-        'mercado': info.get('mercado', ''),
-        'event_id': info.get('event_id', ''),
-        'mensagem_original': info.get('mensagem_original', ''),
-        'resultado': resultado
-    })
-
-
-def enviar_relatorio_diario():
-    global ultimo_relatorio_data
-
-    agora = obter_horario_brasil()
-    if ultimo_relatorio_data == agora.date():
-        return
-
-    # O relatório pertence ao ciclo operacional que começou às 08h.
-    # Portanto, quando ele é enviado às 02h, o período começou no dia anterior.
-    inicio_operacao = agora.date() - timedelta(days=1)
-    data_inicio = inicio_operacao.strftime('%d/%m/%Y')
-    data_fim = agora.strftime('%d/%m/%Y')
-    total = len(historico_diario)
-    greens = sum(1 for item in historico_diario if item['resultado'] == 'GREEN')
-    reds = sum(1 for item in historico_diario if item['resultado'] == 'RED')
-    aproveitamento = (greens / total * 100) if total else 0.0
-
-    contagem = {
-        '05_HT': {'total': 0, 'green': 0, 'red': 0},
-        '15_HT': {'total': 0, 'green': 0, 'red': 0},
-        'LIMITE_FT': {'total': 0, 'green': 0, 'red': 0},
-    }
-
-    for item in historico_diario:
-        mercado = item['mercado']
-        if mercado in contagem:
-            contagem[mercado]['total'] += 1
-            if item['resultado'] == 'GREEN':
-                contagem[mercado]['green'] += 1
-            else:
-                contagem[mercado]['red'] += 1
-
-    nomes = {
-        '05_HT': '+0,5 HT',
-        '15_HT': '+1,5 HT',
-        'LIMITE_FT': 'Limite FT',
-    }
-
-    linhas = [
-        '🐶 *FARO DE BEAGLE*',
-        '📊 *RELATÓRIO DA OPERAÇÃO*',
-        '━━━━━━━━━━━━━━━━━━',
-        '',
-        f'📅 Período: {data_inicio} 08h às {data_fim} 02h',
-        '',
-        f'🚨 Alertas confirmados: {total}',
-        f'🟢 Greens: {greens}',
-        f'🔴 Reds: {reds}',
-        f'📈 Aproveitamento: {aproveitamento:.1f}%',
-        '',
-        '━━━━━━━━━━━━━━━━━━',
-    ]
-
-    for mercado in ('05_HT', '15_HT', 'LIMITE_FT'):
-        dados = contagem[mercado]
-        taxa = (dados['green'] / dados['total'] * 100) if dados['total'] else 0.0
-        linhas.extend([
-            '',
-            f"🔥 *{nomes[mercado]}*",
-            f"Alertas: {dados['total']}",
-            f"🟢 Green: {dados['green']}",
-            f"🔴 Red: {dados['red']}",
-            f"📊 Aproveitamento: {taxa:.1f}%",
-        ])
-
-    linhas.extend(['', '━━━━━━━━━━━━━━━━━━', '', '📋 *ALERTAS CONFIRMADOS*'])
-
-    if historico_diario:
-        for item in historico_diario:
-            marcador = '🟢' if item['resultado'] == 'GREEN' else '🔴'
-            partes = item['mensagem_original'].splitlines()
-            resumo = []
-            for linha in partes:
-                if (
-                    'FARO DE BEAGLE' in linha
-                    or 'Liga:' in linha
-                    or '🏆' in linha
-                    or ' x ' in linha
-                    or '⏱️' in linha
-                ):
-                    resumo.append(linha.replace('*', ''))
-            linhas.append(f"{marcador} " + " | ".join(resumo[:4]))
-    else:
-        linhas.append('Nenhum alerta confirmado no período.')
-
-    pendentes = list(alertas_pendentes.values())
-    if pendentes:
-        linhas.extend(['', '⏳ *ALERTAS AINDA EM ABERTO ÀS 02H*'])
-        for info in pendentes:
-            partes = info.get('mensagem_original', '').splitlines()
-            resumo = []
-            for linha in partes:
-                if (
-                    'FARO DE BEAGLE' in linha
-                    or 'Liga:' in linha
-                    or '🏆' in linha
-                    or ' x ' in linha
-                    or '⏱️' in linha
-                ):
-                    resumo.append(linha.replace('*', ''))
-            linhas.append('⏳ ' + ' | '.join(resumo[:4]))
-
-    linhas.extend([
-        '',
-        '━━━━━━━━━━━━━━━━━━',
-        '🐶 *FARO DE BEAGLE*',
-        '📊 Operação encerrada às 02:00.',
-    ])
-
-    mensagem_relatorio = '\n'.join(linhas)
-    message_id = enviar_alerta(mensagem_relatorio)
-    if message_id:
-        ultimo_relatorio_data = agora.date()
-        relatorios_por_message_id[message_id] = mensagem_relatorio
-        for info in alertas_pendentes.values():
-            info['relatorio_message_id'] = message_id
-            info['relatorio_mensagem'] = mensagem_relatorio
-
-
-def atualizar_relatorio_pos_02h(info, resultado):
-    """Atualiza o relatório das 02h quando um alerta que estava aberto é confirmado depois."""
-    report_id = info.get('relatorio_message_id')
-    if not report_id:
-        return
-
-    base = relatorios_por_message_id.get(report_id, info.get('relatorio_mensagem', ''))
-    if not base:
-        return
-
-    marcador = '🟢' if resultado == 'GREEN' else '🔴'
-    partes = info.get('mensagem_original', '').splitlines()
-    resumo = []
-    for linha in partes:
-        if (
-            'FARO DE BEAGLE' in linha
-            or 'Liga:' in linha
-            or '🏆' in linha
-            or ' x ' in linha
-            or '⏱️' in linha
-        ):
-            resumo.append(linha.replace('*', ''))
-
-    atualizacao = (
-        '\n\n━━━━━━━━━━━━━━━━━━\n'
-        '🔄 *ATUALIZAÇÃO PÓS-02H*\n'
-        f'{marcador} ' + ' | '.join(resumo[:4]) + '\n'
-        f'{marcador} Resultado confirmado: {resultado}'
-    )
-
-    nova = base + atualizacao
-    if editar_alerta(report_id, nova) is None:
-        # editar_alerta não retorna status; mantemos o texto local para futuras atualizações.
-        pass
-    relatorios_por_message_id[report_id] = nova
-
-
-
 def validar_alertas_enviados(jogos_dict):
     """Verifica o placar e edita o alerta apenas anexando os emojis de GREEN ou RED ao final."""
     chaves_para_remover = []
@@ -1760,6 +1506,17 @@ def validar_alertas_enviados(jogos_dict):
         msg_original = info['mensagem_original']
 
         item_jogo = jogos_dict.get(event_id)
+
+        # Se o jogo saiu do endpoint /events/live, ele pode ter terminado.
+        # Busca o evento individual para validar RED/GREEN no FT.
+        if not item_jogo:
+            try:
+                url_evento = f"https://api.sofascore.com/api/v1/event/{event_id}"
+                res_evento = scraper.get(url_evento, timeout=10)
+                if res_evento.status_code == 200:
+                    item_jogo = res_evento.json().get('event')
+            except Exception as e:
+                print(f"Erro ao consultar evento {event_id} para validar alerta: {e}")
 
         if not item_jogo:
             continue
@@ -1810,23 +1567,62 @@ def validar_alertas_enviados(jogos_dict):
 
         if gols_atuais > gols_no_alerta:
 
-            nova_mensagem = (
-                f"{msg_original}\n\n"
-                f"✅️✅️✅️"
-            )
+            # CONFIRMAÇÃO DO GOL:
+            # Alguns gols aparecem no placar e são anulados logo depois
+            # (VAR/falta/impedimento). Antes de marcar GREEN, aguarda
+            # alguns segundos e consulta novamente o evento.
+            gol_confirmado = True
 
-            editar_alerta(
-                message_id,
-                nova_mensagem
-            )
+            try:
+                time.sleep(15)
+                url_confirmacao = f"https://api.sofascore.com/api/v1/event/{event_id}"
+                res_confirmacao = scraper.get(
+                    url_confirmacao,
+                    timeout=10
+                )
 
-            registrar_resultado_diario(info, 'GREEN')
-            if info.get('relatorio_message_id'):
-                atualizar_relatorio_pos_02h(info, 'GREEN')
+                if res_confirmacao.status_code == 200:
+                    evento_confirmado = res_confirmacao.json().get('event', {})
+                    gols_c_confirmados = evento_confirmado.get(
+                        'homeScore', {}
+                    ).get(
+                        'current',
+                        0
+                    )
+                    gols_f_confirmados = evento_confirmado.get(
+                        'awayScore', {}
+                    ).get(
+                        'current',
+                        0
+                    )
+                    gols_confirmados = gols_c_confirmados + gols_f_confirmados
 
-            chaves_para_remover.append(
-                chave_alerta
-            )
+                    if gols_confirmados <= gols_no_alerta:
+                        gol_confirmado = False
+                        print(
+                            f"Gol possivelmente anulado no evento {event_id}. "
+                            f"Placar voltou para {gols_confirmados}. GREEN cancelado."
+                        )
+
+            except Exception as e:
+                print(
+                    f"Aviso ao confirmar gol do evento {event_id}: {e}"
+                )
+
+            if gol_confirmado:
+                nova_mensagem = (
+                    f"{msg_original}\n\n"
+                    f"✅️✅️✅️"
+                )
+
+                editar_alerta(
+                    message_id,
+                    nova_mensagem
+                )
+
+                chaves_para_remover.append(
+                    chave_alerta
+                )
 
         else:
 
@@ -1846,10 +1642,6 @@ def validar_alertas_enviados(jogos_dict):
                     nova_mensagem
                 )
 
-                registrar_resultado_diario(info, 'RED')
-                if info.get('relatorio_message_id'):
-                    atualizar_relatorio_pos_02h(info, 'RED')
-
                 chaves_para_remover.append(
                     chave_alerta
                 )
@@ -1866,10 +1658,6 @@ def validar_alertas_enviados(jogos_dict):
                     nova_mensagem
                 )
 
-                registrar_resultado_diario(info, 'RED')
-                if info.get('relatorio_message_id'):
-                    atualizar_relatorio_pos_02h(info, 'RED')
-
                 chaves_para_remover.append(
                     chave_alerta
                 )
@@ -1879,30 +1667,6 @@ def validar_alertas_enviados(jogos_dict):
             ch,
             None
         )
-
-
-def obter_evento_sofascore(event_id):
-    """Busca um evento individual para validar alertas que atravessaram 02h."""
-    url = f"https://api.sofascore.com/api/v1/event/{event_id}"
-    try:
-        res = sofascore_get(url.replace('https://api.sofascore.com/api/v1/', ''), timeout=10)
-        if res is not None and res.status_code == 200:
-            return res.json().get('event')
-    except Exception:
-        pass
-    return None
-
-
-def checar_alertas_pendentes_fora_do_live(jogos_dict):
-    """Inclui no dicionário os alertas pendentes que já saíram da lista live."""
-    for info in list(alertas_pendentes.values()):
-        event_id = str(info.get('event_id', '')).strip()
-        if not event_id or event_id in jogos_dict:
-            continue
-        evento = obter_evento_sofascore(event_id)
-        if evento:
-            jogos_dict[event_id] = evento
-
 
 
 def checar_jogos_ao_vivo():
@@ -1922,9 +1686,12 @@ def checar_jogos_ao_vivo():
 
     try:
 
-        response = sofascore_get('sport/football/events/live', timeout=15)
+        response = scraper.get(
+            url,
+            timeout=15
+        )
 
-        if response is None or response.status_code != 200:
+        if response.status_code != 200:
 
             print(
                 f"[{horario}] "
@@ -1952,10 +1719,6 @@ def checar_jogos_ao_vivo():
             for item in jogos
             if item.get('id')
         }
-
-        checar_alertas_pendentes_fora_do_live(
-            jogos_dict
-        )
 
         validar_alertas_enviados(
             jogos_dict
@@ -2198,6 +1961,11 @@ def checar_jogos_ao_vivo():
                 )
             )
 
+            # Os incidentes serão consultados somente quando o jogo estiver
+            # perto de atingir o filtro de algum mercado. Isso evita uma chamada
+            # extra desnecessária para todas as partidas ao vivo.
+            vermelhos_casa, vermelhos_fora = 0, 0
+
             linha_fluxo = pressao['texto']
 
             # ==================================================================
@@ -2238,16 +2006,19 @@ def checar_jogos_ao_vivo():
                         pressao
                     )
 
-                    contexto_gol = avaliar_propensao_gol(
-                        '05_HT', gols_c, gols_f, xg_tot,
+                    if score >= 8:
+                        incidentes = obter_incidentes_sofascore(event_id)
+                        vermelhos_casa, vermelhos_fora = extrair_cartoes_vermelhos(incidentes)
+                    score, ajuste_contexto, motivos_contexto = aplicar_contexto_ao_score(
+                        score, '05_HT', gols_c, gols_f, minuto_num,
                         fin_h_int, fin_a_int, cg_h_int, cg_a_int,
                         int(gc_h), int(gc_a), pressao,
-                        classificar_intensidade(
-                            pressao, fin_tot, chutes_gol, grandes_chances
-                        )
+                        vermelhos_casa, vermelhos_fora
                     )
+                    motivos.extend(motivos_contexto)
+                    aprovado = score >= 10
 
-                    if aprovado and contexto_gol['aprovado']:
+                    if aprovado:
                         notificados_05_ht.add(event_id)
 
                         mensagem = montar_layout_alerta(
@@ -2274,14 +2045,7 @@ def checar_jogos_ao_vivo():
                             escanteios,
                             esc_h_int,
                             esc_a_int,
-                            pressao,
-                            analisar_prelive_por_mercado(
-                                event_id,
-                                item.get('homeTeam', {}).get('id'),
-                                item.get('awayTeam', {}).get('id'),
-                                '05_HT',
-                                total_gols
-                            )
+                            pressao
                         )
 
                         msg_id = enviar_alerta(mensagem)
@@ -2312,16 +2076,19 @@ def checar_jogos_ao_vivo():
                         pressao
                     )
 
-                    contexto_gol = avaliar_propensao_gol(
-                        '15_HT', gols_c, gols_f, xg_tot,
+                    if score >= 10:
+                        incidentes = obter_incidentes_sofascore(event_id)
+                        vermelhos_casa, vermelhos_fora = extrair_cartoes_vermelhos(incidentes)
+                    score, ajuste_contexto, motivos_contexto = aplicar_contexto_ao_score(
+                        score, '15_HT', gols_c, gols_f, minuto_num,
                         fin_h_int, fin_a_int, cg_h_int, cg_a_int,
                         int(gc_h), int(gc_a), pressao,
-                        classificar_intensidade(
-                            pressao, fin_tot, chutes_gol, grandes_chances
-                        )
+                        vermelhos_casa, vermelhos_fora
                     )
+                    motivos.extend(motivos_contexto)
+                    aprovado = score >= 12
 
-                    if aprovado and contexto_gol['aprovado']:
+                    if aprovado:
                         notificados_15_ht.add(event_id)
 
                         mensagem = montar_layout_alerta(
@@ -2348,14 +2115,7 @@ def checar_jogos_ao_vivo():
                             escanteios,
                             esc_h_int,
                             esc_a_int,
-                            pressao,
-                            analisar_prelive_por_mercado(
-                                event_id,
-                                item.get('homeTeam', {}).get('id'),
-                                item.get('awayTeam', {}).get('id'),
-                                '15_HT',
-                                total_gols
-                            )
+                            pressao
                         )
 
                         msg_id = enviar_alerta(mensagem)
@@ -2390,16 +2150,19 @@ def checar_jogos_ao_vivo():
                         pressao
                     )
 
-                    contexto_gol = avaliar_propensao_gol(
-                        'LIMITE_FT', gols_c, gols_f, xg_tot,
+                    if score >= 10:
+                        incidentes = obter_incidentes_sofascore(event_id)
+                        vermelhos_casa, vermelhos_fora = extrair_cartoes_vermelhos(incidentes)
+                    score, ajuste_contexto, motivos_contexto = aplicar_contexto_ao_score(
+                        score, 'LIMITE_FT', gols_c, gols_f, minuto_num,
                         fin_h_int, fin_a_int, cg_h_int, cg_a_int,
                         int(gc_h), int(gc_a), pressao,
-                        classificar_intensidade(
-                            pressao, fin_tot, chutes_gol, grandes_chances
-                        )
+                        vermelhos_casa, vermelhos_fora
                     )
+                    motivos.extend(motivos_contexto)
+                    aprovado = score >= 12
 
-                    if aprovado and contexto_gol['aprovado']:
+                    if aprovado:
                         notificados_limite_ft.add(event_id)
 
                         mensagem = montar_layout_alerta(
@@ -2426,14 +2189,7 @@ def checar_jogos_ao_vivo():
                             escanteios,
                             esc_h_int,
                             esc_a_int,
-                            pressao,
-                            analisar_prelive_por_mercado(
-                                event_id,
-                                item.get('homeTeam', {}).get('id'),
-                                item.get('awayTeam', {}).get('id'),
-                                'LIMITE_FT',
-                                total_gols
-                            )
+                            pressao
                         )
 
                         msg_id = enviar_alerta(mensagem)
@@ -2477,13 +2233,7 @@ if __name__ == '__main__':
 
             hora_atual = agora_br.hour
 
-            # Cada período operacional começa às 08:00 e gera um novo histórico.
-            if hora_atual >= 8:
-                if ultima_data_historico != agora_br.date():
-                    historico_diario.clear()
-                    ultima_data_historico = agora_br.date()
-
-            if hora_atual >= 8 or hora_atual < 2:
+            if 8 <= hora_atual < 24:
 
                 checar_jogos_ao_vivo()
 
@@ -2497,10 +2247,8 @@ if __name__ == '__main__':
                     f"[{horario_formatado}] "
                     f"Bot em repouso fora "
                     f"do horário "
-                    f"(08h às 02h)."
+                    f"(08h às 00h)."
                 )
-
-                enviar_relatorio_diario()
 
         except Exception as e:
 
@@ -2508,4 +2256,4 @@ if __name__ == '__main__':
                 f"Aviso no ciclo principal: {e}"
             )
 
-        time.sleep(120)
+        time.sleep(240)

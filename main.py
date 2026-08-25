@@ -6,7 +6,7 @@ import zoneinfo
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAEm4h212tRP1DI_8h2XJbXKzRzhNZUa62g'
+TELEGRAM_TOKEN = 'COLOQUE_AQUI_SEU_NOVO_TOKEN'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -36,6 +36,55 @@ scraper = cloudscraper.create_scraper(
         'desktop': True
     }
 )
+
+# SofaScore passou a exigir sinais de uma requisição XHR em algumas
+# rotas. Em ambientes cloud (como Railway), o IP também pode receber
+# 403 do WAF. Mantemos dois hosts de fallback para evitar que um único
+# bloqueio derrube o bot inteiro.
+SOFASCORE_API_HOSTS = [
+    'https://api.sofascore.com/api/v1',
+    'https://www.sofascore.com/api/v1',
+    'https://api.sofascore.app/api/v1',
+]
+
+SOFASCORE_HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/131.0.0.0 Safari/537.36'
+    ),
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://www.sofascore.com/',
+    'Origin': 'https://www.sofascore.com',
+    'X-Requested-With': 'XMLHttpRequest',
+    'Connection': 'keep-alive',
+}
+
+
+def sofascore_get(path, timeout=10):
+    """GET robusto para o SofaScore, com headers XHR e fallback de host."""
+    for base in SOFASCORE_API_HOSTS:
+        url = f"{base}/{path.lstrip('/')}"
+        try:
+            res = scraper.get(
+                url,
+                headers=SOFASCORE_HEADERS,
+                timeout=timeout
+            )
+
+            if res.status_code == 200:
+                return res
+
+            if res.status_code != 403:
+                # Para outros erros, não insistimos em hosts alternativos.
+                return res
+
+        except Exception:
+            continue
+
+    return None
+
 
 # Registros para evitar repetição do mesmo alerta
 notificados_05_ht = set()
@@ -101,7 +150,7 @@ def obter_estatisticas_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
 
     try:
-        res = scraper.get(url, timeout=10)
+        res = sofascore_get(url.split('/api/v1/', 1)[1], timeout=10)
 
         if res.status_code == 200:
             return res.json().get('statistics', [])
@@ -116,7 +165,7 @@ def obter_prelive_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/prematch-form"
 
     try:
-        res = scraper.get(url, timeout=10)
+        res = sofascore_get(url.split('/api/v1/', 1)[1], timeout=10)
 
         if res.status_code == 200:
             return res.json()
@@ -131,7 +180,7 @@ def obter_pressao_grafico_sofascore(event_id):
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/graph"
 
     try:
-        res = scraper.get(url, timeout=10)
+        res = sofascore_get(url.split('/api/v1/', 1)[1], timeout=10)
 
         if res.status_code == 200:
 
@@ -253,7 +302,7 @@ def obter_incidentes_sofascore(event_id):
     """Busca incidentes do jogo para detectar cartões vermelhos e outros eventos contextuais."""
     url = f"https://api.sofascore.com/api/v1/event/{event_id}/incidents"
     try:
-        res = scraper.get(url, timeout=10)
+        res = sofascore_get(url.split('/api/v1/', 1)[1], timeout=10)
         if res.status_code == 200:
             return res.json().get('incidents', [])
     except Exception:
@@ -1512,7 +1561,7 @@ def validar_alertas_enviados(jogos_dict):
         if not item_jogo:
             try:
                 url_evento = f"https://api.sofascore.com/api/v1/event/{event_id}"
-                res_evento = scraper.get(url_evento, timeout=10)
+                res_evento = sofascore_get(url_evento.split('/api/v1/', 1)[1], timeout=10)
                 if res_evento.status_code == 200:
                     item_jogo = res_evento.json().get('event')
             except Exception as e:
@@ -1576,8 +1625,8 @@ def validar_alertas_enviados(jogos_dict):
             try:
                 time.sleep(15)
                 url_confirmacao = f"https://api.sofascore.com/api/v1/event/{event_id}"
-                res_confirmacao = scraper.get(
-                    url_confirmacao,
+                res_confirmacao = sofascore_get(
+                    url_confirmacao.split('/api/v1/', 1)[1],
                     timeout=10
                 )
 
@@ -1686,10 +1735,19 @@ def checar_jogos_ao_vivo():
 
     try:
 
-        response = scraper.get(
-            url,
+        response = sofascore_get(
+            url.split('/api/v1/', 1)[1],
             timeout=15
         )
+
+        if response is None:
+
+            print(
+                f"[{horario}] SofaScore recusou as tentativas (403)"
+                f" nos hosts disponíveis."
+            )
+
+            return
 
         if response.status_code != 200:
 

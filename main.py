@@ -15,6 +15,7 @@ except ImportError:
 # ==============================================================================
 TELEGRAM_TOKEN = '8826311067:AAE-aO4rOeondyaG_0eC0-3OJl4yAzXpBjc'
 CHAT_ID = '1865504705'
+CHANNEL_ID = '-1004321907969'
 
 TERMOS_IGNORADOS = [
     # Categorias de Base

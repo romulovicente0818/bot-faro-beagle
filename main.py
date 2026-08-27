@@ -13,7 +13,7 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAE-aO4rOeondyaG_0eC0-3OJl4yAzXpBjc'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
@@ -167,9 +167,6 @@ historico_diario = []
 ultimo_relatorio_data = None
 ultima_data_historico = None
 relatorios_por_message_id = {}
-
-# Cache de contexto competitivo para evitar consultas repetidas.
-contexto_competitivo_cache = {}
 
 
 def obter_horario_brasil():
@@ -749,6 +746,7 @@ def calcular_equilibrio(
     return 0
 
 
+\
 def obter_incidentes_sofascore(event_id):
     """Busca incidentes para detectar expulsões/cartões vermelhos."""
     try:
@@ -758,7 +756,6 @@ def obter_incidentes_sofascore(event_id):
     except Exception:
         pass
     return []
-
 
 def extrair_cartoes_vermelhos(incidentes, home_id, away_id):
     """Conta expulsões efetivas por equipe."""
@@ -783,7 +780,6 @@ def extrair_cartoes_vermelhos(incidentes, home_id, away_id):
         elif is_home is False or (team_id and str(team_id) == str(away_id)):
             vermelhos_fora += 1
     return vermelhos_casa, vermelhos_fora
-
 
 def obter_odds_favorito_sofascore(event_id):
     """Obtém o favorito pré-live pelo mercado principal 1X2."""
@@ -831,7 +827,6 @@ def obter_odds_favorito_sofascore(event_id):
         }
     except Exception:
         return None
-
 
 def obter_classificacao_sofascore(item):
     """Consulta classificação/objetivo competitivo, com proteção no início da temporada."""
@@ -930,7 +925,6 @@ def obter_classificacao_sofascore(item):
     except Exception:
         return None
 
-
 def obter_contexto_competitivo(event_id, item):
     """Combina favorito pré-live, classificação/objetivo e expulsões atuais."""
     try:
@@ -954,7 +948,6 @@ def obter_contexto_competitivo(event_id, item):
         return contexto
     except Exception:
         return {'favorito': None, 'classificacao': None, 'vermelhos_casa': 0, 'vermelhos_fora': 0}
-
 
 def avaliar_propensao_gol(
     mercado, gols_c, gols_f, xg_tot, fin_h, fin_a, chutes_h, chutes_a,
@@ -1122,7 +1115,6 @@ def avaliar_propensao_gol(
         'motivos': motivos,
         'contexto': contexto_competitivo
     }
-
 
 
 def calcular_score_05_ht(
@@ -2246,24 +2238,6 @@ def checar_alertas_pendentes_fora_do_live(jogos_dict):
 
 
 
-def acompanhar_pendentes_pos_02h():
-    """Após 02h, não busca novos jogos; apenas acompanha alertas já enviados."""
-    if not alertas_pendentes:
-        return
-
-    jogos_dict = {}
-    for info in list(alertas_pendentes.values()):
-        event_id = str(info.get('event_id', '')).strip()
-        if not event_id:
-            continue
-        evento = obter_evento_sofascore(event_id)
-        if evento:
-            jogos_dict[event_id] = evento
-
-    if jogos_dict:
-        validar_alertas_enviados(jogos_dict)
-
-
 def checar_jogos_ao_vivo():
 
     horario = obter_horario_brasil().strftime('%H:%M:%S')
@@ -2577,6 +2551,13 @@ def checar_jogos_ao_vivo():
             )
 
             # ==================================================================
+            # CONTEXTO COMPETITIVO
+            # ==================================================================
+            # Favorito pré-live + classificação/objetivo competitivo + expulsões.
+            # Fica em cache para reduzir chamadas repetidas ao SofaScore.
+            contexto_competitivo = obter_contexto_competitivo(event_id, item)
+
+            # ==================================================================
             # DADOS PARA O LAYOUT DOS ALERTAS
             # ==================================================================
             # ==================================================================
@@ -2595,10 +2576,6 @@ def checar_jogos_ao_vivo():
                         fin_h_int,
                         fin_a_int,
                         pressao
-                    )
-
-                    contexto_competitivo = obter_contexto_competitivo(
-                        event_id, item
                     )
 
                     contexto_gol = avaliar_propensao_gol(
@@ -2675,10 +2652,6 @@ def checar_jogos_ao_vivo():
                         fin_h_int,
                         fin_a_int,
                         pressao
-                    )
-
-                    contexto_competitivo = obter_contexto_competitivo(
-                        event_id, item
                     )
 
                     contexto_gol = avaliar_propensao_gol(
@@ -2759,10 +2732,6 @@ def checar_jogos_ao_vivo():
                         fin_h_int,
                         fin_a_int,
                         pressao
-                    )
-
-                    contexto_competitivo = obter_contexto_competitivo(
-                        event_id, item
                     )
 
                     contexto_gol = avaliar_propensao_gol(
@@ -2880,9 +2849,6 @@ if __name__ == '__main__':
                     f"(08h às 02h)."
                 )
 
-                # O expediente encerra às 02h, mas alertas já enviados
-                # continuam sendo acompanhados para confirmar Green/Red.
-                acompanhar_pendentes_pos_02h()
                 enviar_relatorio_diario()
 
         except Exception as e:

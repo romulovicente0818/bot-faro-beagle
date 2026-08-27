@@ -13,7 +13,7 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
+TELEGRAM_TOKEN = '8826311067:AAE-aO4rOeondyaG_0eC0-3OJl4yAzXpBjc'
 CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [

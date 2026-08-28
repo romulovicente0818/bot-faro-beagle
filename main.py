@@ -13,8 +13,8 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAE-aO4rOeondyaG_0eC0-3OJl4yAzXpBjc'
-CHAT_ID = '-1004321907969'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
+CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
     # Categorias de Base
@@ -167,6 +167,9 @@ historico_diario = []
 ultimo_relatorio_data = None
 ultima_data_historico = None
 relatorios_por_message_id = {}
+
+# Cache de contexto competitivo para evitar consultas repetidas.
+contexto_competitivo_cache = {}
 
 
 def obter_horario_brasil():
@@ -746,7 +749,6 @@ def calcular_equilibrio(
     return 0
 
 
-\
 def obter_incidentes_sofascore(event_id):
     """Busca incidentes para detectar expulsões/cartões vermelhos."""
     try:
@@ -756,6 +758,7 @@ def obter_incidentes_sofascore(event_id):
     except Exception:
         pass
     return []
+
 
 def extrair_cartoes_vermelhos(incidentes, home_id, away_id):
     """Conta expulsões efetivas por equipe."""
@@ -780,6 +783,7 @@ def extrair_cartoes_vermelhos(incidentes, home_id, away_id):
         elif is_home is False or (team_id and str(team_id) == str(away_id)):
             vermelhos_fora += 1
     return vermelhos_casa, vermelhos_fora
+
 
 def obter_odds_favorito_sofascore(event_id):
     """Obtém o favorito pré-live pelo mercado principal 1X2."""
@@ -827,6 +831,7 @@ def obter_odds_favorito_sofascore(event_id):
         }
     except Exception:
         return None
+
 
 def obter_classificacao_sofascore(item):
     """Consulta classificação/objetivo competitivo, com proteção no início da temporada."""
@@ -925,6 +930,7 @@ def obter_classificacao_sofascore(item):
     except Exception:
         return None
 
+
 def obter_contexto_competitivo(event_id, item):
     """Combina favorito pré-live, classificação/objetivo e expulsões atuais."""
     try:
@@ -948,6 +954,7 @@ def obter_contexto_competitivo(event_id, item):
         return contexto
     except Exception:
         return {'favorito': None, 'classificacao': None, 'vermelhos_casa': 0, 'vermelhos_fora': 0}
+
 
 def avaliar_propensao_gol(
     mercado, gols_c, gols_f, xg_tot, fin_h, fin_a, chutes_h, chutes_a,
@@ -1115,6 +1122,7 @@ def avaliar_propensao_gol(
         'motivos': motivos,
         'contexto': contexto_competitivo
     }
+
 
 
 def calcular_score_05_ht(
@@ -2081,11 +2089,15 @@ def atualizar_relatorio_pos_02h(info, resultado):
 
 
 def validar_alertas_enviados(jogos_dict):
-    """Verifica o placar e edita o alerta apenas anexando os emojis de GREEN ou RED ao final."""
+    """Valida alertas usando apenas o resultado regulamentar (90min + acréscimos).
+
+    Prorrogação e disputa de pênaltis nunca contam como gols para os mercados FT.
+    Depois de confirmado, o resultado é removido dos pendentes e não pode ser
+    alterado posteriormente por eventos de prorrogação/pênaltis.
+    """
     chaves_para_remover = []
 
     for chave_alerta, info in list(alertas_pendentes.items()):
-
         event_id = info['event_id']
         message_id = info['message_id']
         gols_no_alerta = info['gols_alerta']
@@ -2093,126 +2105,92 @@ def validar_alertas_enviados(jogos_dict):
         msg_original = info['mensagem_original']
 
         item_jogo = jogos_dict.get(event_id)
-
         if not item_jogo:
             continue
 
-        gols_c = item_jogo.get(
-            'homeScore', {}
-        ).get(
-            'current',
-            0
-        )
+        status = item_jogo.get('status', {}) or {}
+        status_desc = str(status.get('description', '')).lower()
+        time_status = str(status.get('type', '')).lower()
+        status_code = status.get('code')
 
-        gols_f = item_jogo.get(
-            'awayScore', {}
-        ).get(
-            'current',
-            0
-        )
+        # Placares que representam apenas a partida regulamentar.
+        home_score = item_jogo.get('homeScore', {}) or {}
+        away_score = item_jogo.get('awayScore', {}) or {}
 
+        # SofaScore pode manter 'current' alterado durante prorrogação/pênaltis.
+        # Para partidas já em ET/pênaltis, priorizamos period1/period2 quando
+        # disponíveis; esses campos representam o placar do tempo regulamentar.
+        em_prorrogacao_ou_penaltis = any(term in status_desc for term in (
+            'extra', 'overtime', 'penalties', 'penalty', 'shootout'
+        )) or any(term in time_status for term in (
+            'extra', 'overtime', 'penalt'
+        ))
+
+        def placar_regulamentar(score):
+            if not isinstance(score, dict):
+                return 0
+            # 'normaltime' é a fonte preferencial quando disponível, pois
+            # exclui explicitamente a prorrogação. 'period2' representa o
+            # placar ao fim do 2º tempo quando normaltime não foi fornecido.
+            for chave in ('normaltime', 'period2', 'regularTime', 'current'):
+                valor = score.get(chave)
+                if isinstance(valor, (int, float)):
+                    return int(valor)
+            return 0
+
+        gols_c = placar_regulamentar(home_score)
+        gols_f = placar_regulamentar(away_score)
         gols_atuais = gols_c + gols_f
-
-        status_desc = str(
-            item_jogo.get('status', {})
-            .get('description', '')
-        ).lower()
-
-        time_status = str(
-            item_jogo.get('status', {})
-            .get('type', '')
-        ).lower()
 
         eh_intervalo = (
             'halftime' in status_desc
             or 'ht' in status_desc
             or time_status == 'halftime'
         )
-
         eh_2h = (
             '2nd' in status_desc
             or time_status == '2nd'
         )
 
-        eh_finalizado = (
+        eh_finalizado_regulamentar = (
             time_status == 'finished'
             or 'ended' in status_desc
-            or 'ft' in status_desc
-            or 'extra' in status_desc
+            or 'full time' in status_desc
+            or status_desc.strip() == 'ft'
+            or status_code in (100, 101)
         )
 
+        # Em ET/pênaltis, o placar regulamentar já é definitivo para nossos
+        # mercados FT. Não usamos o placar dos pênaltis para gerar GREEN.
+        if em_prorrogacao_ou_penaltis:
+            eh_finalizado_regulamentar = True
+
         if gols_atuais > gols_no_alerta:
-
-            nova_mensagem = (
-                f"{msg_original}\n\n"
-                f"✅️✅️✅️"
-            )
-
-            editar_alerta(
-                message_id,
-                nova_mensagem
-            )
-
+            nova_mensagem = f"{msg_original}\n\n✅️✅️✅️"
+            editar_alerta(message_id, nova_mensagem)
             registrar_resultado_diario(info, 'GREEN')
             if info.get('relatorio_message_id'):
                 atualizar_relatorio_pos_02h(info, 'GREEN')
+            chaves_para_remover.append(chave_alerta)
 
-            chaves_para_remover.append(
-                chave_alerta
-            )
+        elif mercado in ['05_HT', '15_HT'] and (eh_intervalo or eh_2h or eh_finalizado_regulamentar):
+            nova_mensagem = f"{msg_original}\n\n❌️❌️❌️"
+            editar_alerta(message_id, nova_mensagem)
+            registrar_resultado_diario(info, 'RED')
+            if info.get('relatorio_message_id'):
+                atualizar_relatorio_pos_02h(info, 'RED')
+            chaves_para_remover.append(chave_alerta)
 
-        else:
-
-            if mercado in ['05_HT', '15_HT'] and (
-                eh_intervalo
-                or eh_2h
-                or eh_finalizado
-            ):
-
-                nova_mensagem = (
-                    f"{msg_original}\n\n"
-                    f"❌️❌️❌️"
-                )
-
-                editar_alerta(
-                    message_id,
-                    nova_mensagem
-                )
-
-                registrar_resultado_diario(info, 'RED')
-                if info.get('relatorio_message_id'):
-                    atualizar_relatorio_pos_02h(info, 'RED')
-
-                chaves_para_remover.append(
-                    chave_alerta
-                )
-
-            elif mercado == 'LIMITE_FT' and eh_finalizado:
-
-                nova_mensagem = (
-                    f"{msg_original}\n\n"
-                    f"❌️❌️❌️"
-                )
-
-                editar_alerta(
-                    message_id,
-                    nova_mensagem
-                )
-
-                registrar_resultado_diario(info, 'RED')
-                if info.get('relatorio_message_id'):
-                    atualizar_relatorio_pos_02h(info, 'RED')
-
-                chaves_para_remover.append(
-                    chave_alerta
-                )
+        elif mercado == 'LIMITE_FT' and eh_finalizado_regulamentar:
+            nova_mensagem = f"{msg_original}\n\n❌️❌️❌️"
+            editar_alerta(message_id, nova_mensagem)
+            registrar_resultado_diario(info, 'RED')
+            if info.get('relatorio_message_id'):
+                atualizar_relatorio_pos_02h(info, 'RED')
+            chaves_para_remover.append(chave_alerta)
 
     for ch in chaves_para_remover:
-        alertas_pendentes.pop(
-            ch,
-            None
-        )
-
+        alertas_pendentes.pop(ch, None)
 
 def obter_evento_sofascore(event_id):
     """Busca um evento individual para validar alertas que atravessaram 02h."""
@@ -2236,6 +2214,24 @@ def checar_alertas_pendentes_fora_do_live(jogos_dict):
         if evento:
             jogos_dict[event_id] = evento
 
+
+
+def acompanhar_pendentes_pos_02h():
+    """Após 02h, não busca novos jogos; apenas acompanha alertas já enviados."""
+    if not alertas_pendentes:
+        return
+
+    jogos_dict = {}
+    for info in list(alertas_pendentes.values()):
+        event_id = str(info.get('event_id', '')).strip()
+        if not event_id:
+            continue
+        evento = obter_evento_sofascore(event_id)
+        if evento:
+            jogos_dict[event_id] = evento
+
+    if jogos_dict:
+        validar_alertas_enviados(jogos_dict)
 
 
 def checar_jogos_ao_vivo():
@@ -2551,13 +2547,6 @@ def checar_jogos_ao_vivo():
             )
 
             # ==================================================================
-            # CONTEXTO COMPETITIVO
-            # ==================================================================
-            # Favorito pré-live + classificação/objetivo competitivo + expulsões.
-            # Fica em cache para reduzir chamadas repetidas ao SofaScore.
-            contexto_competitivo = obter_contexto_competitivo(event_id, item)
-
-            # ==================================================================
             # DADOS PARA O LAYOUT DOS ALERTAS
             # ==================================================================
             # ==================================================================
@@ -2576,6 +2565,10 @@ def checar_jogos_ao_vivo():
                         fin_h_int,
                         fin_a_int,
                         pressao
+                    )
+
+                    contexto_competitivo = obter_contexto_competitivo(
+                        event_id, item
                     )
 
                     contexto_gol = avaliar_propensao_gol(
@@ -2652,6 +2645,10 @@ def checar_jogos_ao_vivo():
                         fin_h_int,
                         fin_a_int,
                         pressao
+                    )
+
+                    contexto_competitivo = obter_contexto_competitivo(
+                        event_id, item
                     )
 
                     contexto_gol = avaliar_propensao_gol(
@@ -2732,6 +2729,10 @@ def checar_jogos_ao_vivo():
                         fin_h_int,
                         fin_a_int,
                         pressao
+                    )
+
+                    contexto_competitivo = obter_contexto_competitivo(
+                        event_id, item
                     )
 
                     contexto_gol = avaliar_propensao_gol(
@@ -2849,6 +2850,9 @@ if __name__ == '__main__':
                     f"(08h às 02h)."
                 )
 
+                # O expediente encerra às 02h, mas alertas já enviados
+                # continuam sendo acompanhados para confirmar Green/Red.
+                acompanhar_pendentes_pos_02h()
                 enviar_relatorio_diario()
 
         except Exception as e:

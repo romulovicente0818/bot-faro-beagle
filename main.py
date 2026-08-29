@@ -13,8 +13,8 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAE-aO4rOeondyaG_0eC0-3OJl4yAzXpBjc'
-CHAT_ID = '-1004321907969'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
+CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
     # Categorias de Base
@@ -192,6 +192,13 @@ def enviar_alerta(mensagem):
         if res.status_code == 200:
             dados = res.json()
             return dados.get('result', {}).get('message_id')
+
+        # O Telegram pode recusar a mensagem sem gerar uma exceção HTTP.
+        # Antes isso ficava silencioso e o Railway parecia estar normal.
+        print(
+            f"Telegram recusou a mensagem | HTTP {res.status_code} | "
+            f"Resposta: {res.text[:500]}"
+        )
 
     except Exception as e:
         print(f"Erro ao enviar Telegram: {e}")
@@ -899,16 +906,16 @@ def obter_classificacao_sofascore(item):
                 press = 0.0
                 motivo = ''
                 if pos <= limite_top:
-                    press += 0.4
+                    press += 0.8
                     motivo = 'na zona de objetivo alto'
                 elif pos <= limite_top + 2:
-                    press += 0.8
+                    press += 0.5
                     motivo = 'próxima da zona de objetivo alto'
                 if pos >= limite_releg:
                     press += 0.9
                     motivo = 'na zona de risco na tabela'
                 elif pos == limite_releg - 1:
-                    press += 0.7
+                    press += 0.6
                     motivo = 'próxima da zona de risco'
                 return press, motivo
 
@@ -931,12 +938,32 @@ def obter_classificacao_sofascore(item):
         return None
 
 
-def obter_contexto_competitivo(event_id, item):
-    """Combina favorito pré-live, classificação/objetivo e expulsões atuais."""
+def obter_contexto_competitivo(
+    event_id,
+    item,
+    gols_c=0,
+    gols_f=0,
+    fin_h=0,
+    fin_a=0,
+    chutes_h=0,
+    chutes_a=0,
+    gc_h=0,
+    gc_a=0,
+    pressao=None
+):
+    """Combina favorito, tabela, situação do jogo e expulsões.
+
+    A pressão competitiva exibida não é escolhida apenas pela tabela.
+    Primeiro considera quem realmente tem motivo para buscar o próximo gol
+    e quem está produzindo no jogo. A classificação entra como confirmação
+    secundária. Isso evita atribuir a pressão ao lado errado.
+    """
     try:
+        pressao = pressao or {}
         chave_evento = str(event_id)
         agora_ts = time.time()
         cached = contexto_competitivo_cache.get(f'event:{chave_evento}')
+
         if cached and agora_ts - cached.get('ts', 0) < 900:
             contexto = dict(cached.get('data', {}))
         else:
@@ -944,16 +971,142 @@ def obter_contexto_competitivo(event_id, item):
                 'favorito': obter_odds_favorito_sofascore(event_id),
                 'classificacao': obter_classificacao_sofascore(item),
             }
-            contexto_competitivo_cache[f'event:{chave_evento}'] = {'ts': agora_ts, 'data': contexto}
+            contexto_competitivo_cache[f'event:{chave_evento}'] = {
+                'ts': agora_ts,
+                'data': contexto
+            }
+
         incidentes = obter_incidentes_sofascore(event_id)
         contexto['vermelhos_casa'], contexto['vermelhos_fora'] = extrair_cartoes_vermelhos(
             incidentes,
             item.get('homeTeam', {}).get('id'),
             item.get('awayTeam', {}).get('id')
         )
+
+        favorito_info = contexto.get('favorito') or {}
+        classificacao = contexto.get('classificacao') or {}
+
+        total_fin = fin_h + fin_a
+        total_chutes = chutes_h + chutes_a
+        total_gc = gc_h + gc_a
+
+        def producao(lado):
+            if lado == 'home':
+                fin, alvo, gc = fin_h, chutes_h, gc_h
+            else:
+                fin, alvo, gc = fin_a, chutes_a, gc_a
+
+            score = 0
+            if total_fin and fin / total_fin >= 0.45:
+                score += 1
+            if total_chutes and alvo / total_chutes >= 0.45:
+                score += 1
+            if total_gc and gc / total_gc >= 0.50:
+                score += 1
+            return score
+
+        def pressao_tabela(lado):
+            if not classificacao.get('available'):
+                return 0.0
+            chave = 'home_pressure' if lado == 'home' else 'away_pressure'
+            return float(classificacao.get(chave, 0) or 0)
+
+        favorito = favorito_info.get('favorito') if isinstance(favorito_info, dict) else None
+
+        # Pontuação contextual por lado. A situação do placar tem prioridade.
+        lado_scores = {'home': 0.0, 'away': 0.0}
+        motivos_lado = {'home': [], 'away': []}
+
+        # Quem está perdendo tem necessidade objetiva de buscar o empate.
+        if gols_c < gols_f:
+            lado_scores['home'] += 3.0
+            motivos_lado['home'].append('atrás do placar')
+        elif gols_f < gols_c:
+            lado_scores['away'] += 3.0
+            motivos_lado['away'].append('atrás do placar')
+
+        # Em empate, o favorito tem a primeira prioridade para buscar o gol.
+        if gols_c == gols_f and favorito in ('home', 'away'):
+            lado_scores[favorito] += 2.0
+            motivos_lado[favorito].append('favorito pré-live em jogo empatado')
+
+        # Favorito atrás do placar recebe reforço claro.
+        if favorito in ('home', 'away'):
+            if (favorito == 'home' and gols_c < gols_f) or (
+                favorito == 'away' and gols_f < gols_c
+            ):
+                lado_scores[favorito] += 2.0
+                motivos_lado[favorito].append('favorito atrás buscando reação')
+
+        # Produção ao vivo confirma quem está realmente tentando.
+        for lado in ('home', 'away'):
+            prod = producao(lado)
+            if prod >= 2:
+                lado_scores[lado] += 2.0
+                motivos_lado[lado].append('produção ofensiva dominante')
+            elif prod == 1:
+                lado_scores[lado] += 0.75
+
+        # Pressão recente do gráfico: só usada para desempatar a direção.
+        direcao = float(pressao.get('direcao', 0) or 0)
+        if direcao >= 8:
+            lado_scores['home'] += 1.0
+            motivos_lado['home'].append('pressão ao vivo para a casa')
+        elif direcao <= -8:
+            lado_scores['away'] += 1.0
+            motivos_lado['away'].append('pressão ao vivo para fora')
+
+        # Expulsão: a equipe em superioridade ganha contexto, sobretudo se
+        # estiver empatando ou perdendo e produzindo.
+        vc = int(contexto.get('vermelhos_casa', 0) or 0)
+        vf = int(contexto.get('vermelhos_fora', 0) or 0)
+        if vc and not vf:
+            lado_scores['away'] += 1.5
+            motivos_lado['away'].append('superioridade numérica')
+        elif vf and not vc:
+            lado_scores['home'] += 1.5
+            motivos_lado['home'].append('superioridade numérica')
+
+        # A tabela nunca deve inverter uma leitura clara do jogo.
+        for lado in ('home', 'away'):
+            tabela = pressao_tabela(lado)
+            if tabela >= 0.7:
+                lado_scores[lado] += 0.5
+                motivos_lado[lado].append('objetivo competitivo na tabela')
+            elif tabela >= 0.4:
+                lado_scores[lado] += 0.25
+
+        diferenca_scores = abs(lado_scores['home'] - lado_scores['away'])
+        lado_escolhido = 'home' if lado_scores['home'] > lado_scores['away'] else 'away'
+        if diferenca_scores < 1.0:
+            lado_escolhido = None
+
+        contexto['pressao_competitiva'] = {
+            'lado': lado_escolhido,
+            'score_home': round(lado_scores['home'], 2),
+            'score_away': round(lado_scores['away'], 2),
+            'motivo': (
+                motivos_lado[lado_escolhido][0]
+                if lado_escolhido and motivos_lado[lado_escolhido]
+                else ''
+            )
+        }
+
         return contexto
+
     except Exception:
-        return {'favorito': None, 'classificacao': None, 'vermelhos_casa': 0, 'vermelhos_fora': 0}
+        return {
+            'favorito': None,
+            'classificacao': None,
+            'vermelhos_casa': 0,
+            'vermelhos_fora': 0,
+            'pressao_competitiva': {
+                'lado': None,
+                'score_home': 0,
+                'score_away': 0,
+                'motivo': ''
+            }
+        }
 
 
 def avaliar_propensao_gol(
@@ -966,8 +1119,11 @@ def avaliar_propensao_gol(
     classificacao = contexto_competitivo.get('classificacao') or {}
     vermelhos_casa = int(contexto_competitivo.get('vermelhos_casa', 0) or 0)
     vermelhos_fora = int(contexto_competitivo.get('vermelhos_fora', 0) or 0)
+    pressao_comp = contexto_competitivo.get('pressao_competitiva') or {}
+
     pontos = 0.0
     motivos = []
+    caca_gol = False
     total_fin = fin_h + fin_a
     total_chutes = chutes_h + chutes_a
     total_gc = gc_h + gc_a
@@ -979,9 +1135,7 @@ def avaliar_propensao_gol(
         pontos -= 1
         motivos.append('intensidade recente em queda')
 
-    # Expulsões: superioridade numérica só ajuda quando o time com vantagem
-    # está em condição de pressionar; se o time que já perdia ficou com um a menos,
-    # o contexto é penalizado.
+    # Expulsões: superioridade numérica ajuda o lado que pode explorar a vantagem.
     if vermelhos_casa or vermelhos_fora:
         if gols_c < gols_f:
             equipe_atras = 'home'
@@ -989,6 +1143,7 @@ def avaliar_propensao_gol(
             equipe_atras = 'away'
         else:
             equipe_atras = None
+
         if vermelhos_casa and vermelhos_fora:
             pontos += 0.5
             motivos.append('há expulsão dos dois lados')
@@ -1022,7 +1177,8 @@ def avaliar_propensao_gol(
             'pontos': pontos,
             'nivel': 'ALTA' if pontos >= 2 else ('MÉDIA' if pontos >= 1 else 'BAIXA'),
             'motivos': motivos,
-            'contexto': contexto_competitivo
+            'contexto': contexto_competitivo,
+            'caca_gol': False
         }
 
     if diferenca == 0:
@@ -1035,24 +1191,46 @@ def avaliar_propensao_gol(
             pontos += 1
         if total_chutes >= 5 or total_gc >= 2:
             pontos += 1
+
+        favorito = favorito_info.get('favorito') if isinstance(favorito_info, dict) else None
+        if favorito == 'home':
+            favorito_produz = fin_h > fin_a or chutes_h > chutes_a or gc_h > gc_a
+        elif favorito == 'away':
+            favorito_produz = fin_a > fin_h or chutes_a > chutes_h or gc_a > gc_h
+        else:
+            favorito_produz = False
+
+        if favorito and favorito_produz and (recente >= 25 or aceleracao >= 0):
+            pontos += 1
+            motivos.append('favorito empatado está crescendo')
+            caca_gol = True
+
     elif diferenca == 1:
         if gols_c < gols_f:
             fin_trailing, shots_trailing, gc_trailing, lado_trailing = fin_h, chutes_h, gc_h, 'home'
         else:
             fin_trailing, shots_trailing, gc_trailing, lado_trailing = fin_a, chutes_a, gc_a, 'away'
+
         share_fin = fin_trailing / total_fin if total_fin else 0
         share_shots = shots_trailing / total_chutes if total_chutes else 0
         share_gc = gc_trailing / total_gc if total_gc else 0
-        produzindo = share_fin >= 0.40 or share_shots >= 0.40 or share_gc >= 0.50
+        produzindo = (
+            share_fin >= 0.40
+            or share_shots >= 0.40
+            or share_gc >= 0.50
+        )
+
         if produzindo:
             pontos += 2
             motivos.append('equipe atrás do placar está produzindo')
         elif share_fin < 0.30 and share_shots < 0.30 and gc_trailing == 0:
             pontos -= 2
             motivos.append('equipe atrás do placar produz pouco')
+
         if aceleracao <= -6 and share_shots < 0.40:
             pontos -= 1
             motivos.append('pressão não sustenta reação')
+
         if recente >= 30:
             pontos += 1
         elif recente < 20 and aceleracao < 0:
@@ -1063,44 +1241,58 @@ def avaliar_propensao_gol(
             if produzindo:
                 pontos += 2
                 motivos.append('favorito atrás está crescendo no jogo')
+                caca_gol = True
             else:
-                pontos += 0.5
-                motivos.append('favorito está atrás do placar')
+                motivos.append('favorito está atrás, mas sem produção suficiente')
+
+        # Se não há favorito identificado, a equipe atrás só é considerada
+        # "buscando o gol" quando a produção ao vivo confirma a reação.
+        if produzindo and not caca_gol:
+            press_comp_lado = pressao_comp.get('lado')
+            if press_comp_lado == lado_trailing:
+                caca_gol = True
+                motivos.append('equipe atrás tem pressão competitiva e está reagindo')
 
         if classificacao.get('available'):
             if lado_trailing == 'home':
-                press_comp = float(classificacao.get('home_pressure', 0) or 0)
+                press_comp_tab = float(classificacao.get('home_pressure', 0) or 0)
                 motivo_comp = classificacao.get('home_reason', '')
             else:
-                press_comp = float(classificacao.get('away_pressure', 0) or 0)
+                press_comp_tab = float(classificacao.get('away_pressure', 0) or 0)
                 motivo_comp = classificacao.get('away_reason', '')
-            if press_comp >= 0.7:
-                pontos += 1.5
-                motivos.append(f'equipe atrás tem objetivo competitivo: {motivo_comp}' if motivo_comp else 'equipe atrás tem maior necessidade competitiva')
-            elif press_comp >= 0.4:
+
+            if press_comp_tab >= 0.7:
                 pontos += 0.5
-                motivos.append('há pressão competitiva pela tabela')
+                if not caca_gol and produzindo:
+                    caca_gol = True
+                motivos.append(
+                    f'equipe atrás tem objetivo competitivo: {motivo_comp}'
+                    if motivo_comp else
+                    'equipe atrás tem maior necessidade competitiva'
+                )
+            elif press_comp_tab >= 0.4:
+                pontos += 0.25
+
     else:
         pontos -= 2
         motivos.append('vantagem de dois ou mais gols')
 
-    # Empate: favorito/necessitado criando e crescendo recebe reforço.
-    if diferenca == 0 and classificacao.get('available'):
-        hp = float(classificacao.get('home_pressure', 0) or 0)
-        ap = float(classificacao.get('away_pressure', 0) or 0)
-        if max(hp, ap) >= 0.7 and (recente >= 25 or aceleracao >= 4):
-            pontos += 1
-            motivos.append('há pressão competitiva e jogo ainda vivo')
+    # Para jogos empatados, a pressão competitiva só conta se o lado identificado
+    # também estiver mostrando produção ao vivo.
+    if diferenca == 0:
+        lado_comp = pressao_comp.get('lado')
+        if lado_comp == 'home':
+            produz = fin_h > fin_a or chutes_h > chutes_a or gc_h > gc_a
+        elif lado_comp == 'away':
+            produz = fin_a > fin_h or chutes_a > chutes_h or gc_a > gc_h
+        else:
+            produz = False
 
-    if diferenca == 0 and isinstance(favorito_info, dict):
-        favorito = favorito_info.get('favorito')
-        if favorito and recente >= 25 and aceleracao >= 0:
-            if favorito == 'home' and (fin_h > fin_a or chutes_h > chutes_a or gc_h > gc_a):
-                pontos += 1
-                motivos.append('favorito empatado está crescendo')
-            elif favorito == 'away' and (fin_a > fin_h or chutes_a > chutes_h or gc_a > gc_h):
-                pontos += 1
-                motivos.append('favorito empatado está crescendo')
+        if lado_comp and produz and (recente >= 25 or aceleracao >= 0):
+            pontos += 1
+            motivos.append('pressão competitiva coincide com produção ao vivo')
+            if favorito_info.get('favorito') == lado_comp:
+                caca_gol = True
 
     if mercado == 'LIMITE_FT':
         if recente >= 35:
@@ -1120,7 +1312,45 @@ def avaliar_propensao_gol(
         'pontos': pontos,
         'nivel': 'ALTA' if pontos >= 3 else ('MÉDIA' if pontos >= 1 else 'BAIXA'),
         'motivos': motivos,
-        'contexto': contexto_competitivo
+        'contexto': contexto_competitivo,
+        'caca_gol': caca_gol
+    }
+
+
+def calcular_exigencia_limite_ft(minuto, total_gols):
+    """Aumenta progressivamente o rigor do Limite FT.
+
+    Quanto mais gols já existem e quanto mais o relógio avança, maior deve ser
+    a evidência necessária. Mantemos a janela operacional de 65'-75'.
+    """
+    base_por_gols = {
+        0: 12,
+        1: 13,
+        2: 14,
+        3: 15,
+        4: 16,
+    }
+    minimo_score = base_por_gols.get(min(total_gols, 4), 16)
+
+    if minuto >= 72:
+        minimo_score += 1
+    elif minuto >= 69:
+        minimo_score += 0
+
+    # A partir de 70', além do score, o jogo precisa mostrar contexto claro.
+    if minuto >= 70:
+        contexto_minimo = 2
+    else:
+        contexto_minimo = 1
+
+    # Em placares já altos, a exigência contextual sobe mais uma vez.
+    if total_gols >= 3:
+        contexto_minimo += 1
+
+    return {
+        'score_minimo': minimo_score,
+        'contexto_minimo': contexto_minimo,
+        'exigir_caca_gol': minuto >= 70
     }
 
 
@@ -1879,12 +2109,12 @@ def montar_layout_alerta(
     if isinstance(favorito_info, dict) and favorito_info.get('favorito'):
         lado = 'Casa' if favorito_info.get('favorito') == 'home' else 'Fora'
         contexto_linhas.append(f'⭐ Favorito pré-live: {lado} ({favorito_info.get("status", "")})')
-    if classificacao.get('available'):
-        hp = classificacao.get('home_pressure', 0) or 0
-        ap = classificacao.get('away_pressure', 0) or 0
-        if hp >= 0.7 or ap >= 0.7:
-            lado = time_casa if hp >= ap else time_fora
-            contexto_linhas.append(f'🎯 Pressão competitiva: {lado}')
+    pressao_comp = contexto_competitivo.get('pressao_competitiva') or {}
+    lado_comp = pressao_comp.get('lado')
+    if lado_comp == 'home':
+        contexto_linhas.append(f'🎯 Pressão competitiva: {time_casa}')
+    elif lado_comp == 'away':
+        contexto_linhas.append(f'🎯 Pressão competitiva: {time_fora}')
     if vermelhos_casa or vermelhos_fora:
         if vermelhos_casa and vermelhos_fora:
             contexto_linhas.append('🟥 Expulsões: 1+ de cada lado')
@@ -2041,13 +2271,26 @@ def enviar_relatorio_diario():
     ])
 
     mensagem_relatorio = '\n'.join(linhas)
+    print(
+        f"[{agora.strftime('%H:%M:%S')}] Tentando enviar relatório diário "
+        f"do ciclo {data_inicio} 08h -> {data_fim} 02h..."
+    )
     message_id = enviar_alerta(mensagem_relatorio)
     if message_id:
+        print(
+            f"[{agora.strftime('%H:%M:%S')}] Relatório diário enviado "
+            f"com sucesso | message_id={message_id}"
+        )
         ultimo_relatorio_data = agora.date()
         relatorios_por_message_id[message_id] = mensagem_relatorio
         for info in alertas_pendentes.values():
             info['relatorio_message_id'] = message_id
             info['relatorio_mensagem'] = mensagem_relatorio
+    else:
+        print(
+            f"[{agora.strftime('%H:%M:%S')}] Relatório diário NÃO foi enviado. "
+            f"Será tentado novamente no próximo ciclo de 120s."
+        )
 
 
 def atualizar_relatorio_pos_02h(info, resultado):
@@ -2089,15 +2332,11 @@ def atualizar_relatorio_pos_02h(info, resultado):
 
 
 def validar_alertas_enviados(jogos_dict):
-    """Valida alertas usando apenas o resultado regulamentar (90min + acréscimos).
-
-    Prorrogação e disputa de pênaltis nunca contam como gols para os mercados FT.
-    Depois de confirmado, o resultado é removido dos pendentes e não pode ser
-    alterado posteriormente por eventos de prorrogação/pênaltis.
-    """
+    """Verifica o placar e edita o alerta apenas anexando os emojis de GREEN ou RED ao final."""
     chaves_para_remover = []
 
     for chave_alerta, info in list(alertas_pendentes.items()):
+
         event_id = info['event_id']
         message_id = info['message_id']
         gols_no_alerta = info['gols_alerta']
@@ -2105,92 +2344,126 @@ def validar_alertas_enviados(jogos_dict):
         msg_original = info['mensagem_original']
 
         item_jogo = jogos_dict.get(event_id)
+
         if not item_jogo:
             continue
 
-        status = item_jogo.get('status', {}) or {}
-        status_desc = str(status.get('description', '')).lower()
-        time_status = str(status.get('type', '')).lower()
-        status_code = status.get('code')
+        gols_c = item_jogo.get(
+            'homeScore', {}
+        ).get(
+            'current',
+            0
+        )
 
-        # Placares que representam apenas a partida regulamentar.
-        home_score = item_jogo.get('homeScore', {}) or {}
-        away_score = item_jogo.get('awayScore', {}) or {}
+        gols_f = item_jogo.get(
+            'awayScore', {}
+        ).get(
+            'current',
+            0
+        )
 
-        # SofaScore pode manter 'current' alterado durante prorrogação/pênaltis.
-        # Para partidas já em ET/pênaltis, priorizamos period1/period2 quando
-        # disponíveis; esses campos representam o placar do tempo regulamentar.
-        em_prorrogacao_ou_penaltis = any(term in status_desc for term in (
-            'extra', 'overtime', 'penalties', 'penalty', 'shootout'
-        )) or any(term in time_status for term in (
-            'extra', 'overtime', 'penalt'
-        ))
-
-        def placar_regulamentar(score):
-            if not isinstance(score, dict):
-                return 0
-            # 'normaltime' é a fonte preferencial quando disponível, pois
-            # exclui explicitamente a prorrogação. 'period2' representa o
-            # placar ao fim do 2º tempo quando normaltime não foi fornecido.
-            for chave in ('normaltime', 'period2', 'regularTime', 'current'):
-                valor = score.get(chave)
-                if isinstance(valor, (int, float)):
-                    return int(valor)
-            return 0
-
-        gols_c = placar_regulamentar(home_score)
-        gols_f = placar_regulamentar(away_score)
         gols_atuais = gols_c + gols_f
+
+        status_desc = str(
+            item_jogo.get('status', {})
+            .get('description', '')
+        ).lower()
+
+        time_status = str(
+            item_jogo.get('status', {})
+            .get('type', '')
+        ).lower()
 
         eh_intervalo = (
             'halftime' in status_desc
             or 'ht' in status_desc
             or time_status == 'halftime'
         )
+
         eh_2h = (
             '2nd' in status_desc
             or time_status == '2nd'
         )
 
-        eh_finalizado_regulamentar = (
+        eh_finalizado = (
             time_status == 'finished'
             or 'ended' in status_desc
-            or 'full time' in status_desc
-            or status_desc.strip() == 'ft'
-            or status_code in (100, 101)
+            or 'ft' in status_desc
+            or 'extra' in status_desc
         )
 
-        # Em ET/pênaltis, o placar regulamentar já é definitivo para nossos
-        # mercados FT. Não usamos o placar dos pênaltis para gerar GREEN.
-        if em_prorrogacao_ou_penaltis:
-            eh_finalizado_regulamentar = True
-
         if gols_atuais > gols_no_alerta:
-            nova_mensagem = f"{msg_original}\n\n✅️✅️✅️"
-            editar_alerta(message_id, nova_mensagem)
+
+            nova_mensagem = (
+                f"{msg_original}\n\n"
+                f"✅️✅️✅️"
+            )
+
+            editar_alerta(
+                message_id,
+                nova_mensagem
+            )
+
             registrar_resultado_diario(info, 'GREEN')
             if info.get('relatorio_message_id'):
                 atualizar_relatorio_pos_02h(info, 'GREEN')
-            chaves_para_remover.append(chave_alerta)
 
-        elif mercado in ['05_HT', '15_HT'] and (eh_intervalo or eh_2h or eh_finalizado_regulamentar):
-            nova_mensagem = f"{msg_original}\n\n❌️❌️❌️"
-            editar_alerta(message_id, nova_mensagem)
-            registrar_resultado_diario(info, 'RED')
-            if info.get('relatorio_message_id'):
-                atualizar_relatorio_pos_02h(info, 'RED')
-            chaves_para_remover.append(chave_alerta)
+            chaves_para_remover.append(
+                chave_alerta
+            )
 
-        elif mercado == 'LIMITE_FT' and eh_finalizado_regulamentar:
-            nova_mensagem = f"{msg_original}\n\n❌️❌️❌️"
-            editar_alerta(message_id, nova_mensagem)
-            registrar_resultado_diario(info, 'RED')
-            if info.get('relatorio_message_id'):
-                atualizar_relatorio_pos_02h(info, 'RED')
-            chaves_para_remover.append(chave_alerta)
+        else:
+
+            if mercado in ['05_HT', '15_HT'] and (
+                eh_intervalo
+                or eh_2h
+                or eh_finalizado
+            ):
+
+                nova_mensagem = (
+                    f"{msg_original}\n\n"
+                    f"❌️❌️❌️"
+                )
+
+                editar_alerta(
+                    message_id,
+                    nova_mensagem
+                )
+
+                registrar_resultado_diario(info, 'RED')
+                if info.get('relatorio_message_id'):
+                    atualizar_relatorio_pos_02h(info, 'RED')
+
+                chaves_para_remover.append(
+                    chave_alerta
+                )
+
+            elif mercado == 'LIMITE_FT' and eh_finalizado:
+
+                nova_mensagem = (
+                    f"{msg_original}\n\n"
+                    f"❌️❌️❌️"
+                )
+
+                editar_alerta(
+                    message_id,
+                    nova_mensagem
+                )
+
+                registrar_resultado_diario(info, 'RED')
+                if info.get('relatorio_message_id'):
+                    atualizar_relatorio_pos_02h(info, 'RED')
+
+                chaves_para_remover.append(
+                    chave_alerta
+                )
 
     for ch in chaves_para_remover:
-        alertas_pendentes.pop(ch, None)
+        alertas_pendentes.pop(
+            ch,
+            None
+        )
+
 
 def obter_evento_sofascore(event_id):
     """Busca um evento individual para validar alertas que atravessaram 02h."""
@@ -2568,7 +2841,17 @@ def checar_jogos_ao_vivo():
                     )
 
                     contexto_competitivo = obter_contexto_competitivo(
-                        event_id, item
+                        event_id,
+                        item,
+                        gols_c,
+                        gols_f,
+                        fin_h_int,
+                        fin_a_int,
+                        cg_h_int,
+                        cg_a_int,
+                        int(gc_h),
+                        int(gc_a),
+                        pressao
                     )
 
                     contexto_gol = avaliar_propensao_gol(
@@ -2648,7 +2931,17 @@ def checar_jogos_ao_vivo():
                     )
 
                     contexto_competitivo = obter_contexto_competitivo(
-                        event_id, item
+                        event_id,
+                        item,
+                        gols_c,
+                        gols_f,
+                        fin_h_int,
+                        fin_a_int,
+                        cg_h_int,
+                        cg_a_int,
+                        int(gc_h),
+                        int(gc_a),
+                        pressao
                     )
 
                     contexto_gol = avaliar_propensao_gol(
@@ -2711,6 +3004,7 @@ def checar_jogos_ao_vivo():
 
             # ==================================================================
             # 3. OVER LIMITE FT -> 65' a 75'
+            # Rigor progressivo por minuto/placar + busca real pelo gol a partir de 70'.
             # ==================================================================
 
             elif (
@@ -2732,7 +3026,17 @@ def checar_jogos_ao_vivo():
                     )
 
                     contexto_competitivo = obter_contexto_competitivo(
-                        event_id, item
+                        event_id,
+                        item,
+                        gols_c,
+                        gols_f,
+                        fin_h_int,
+                        fin_a_int,
+                        cg_h_int,
+                        cg_a_int,
+                        int(gc_h),
+                        int(gc_a),
+                        pressao
                     )
 
                     contexto_gol = avaliar_propensao_gol(
@@ -2745,7 +3049,27 @@ def checar_jogos_ao_vivo():
                         contexto_competitivo
                     )
 
-                    if aprovado and contexto_gol['aprovado']:
+                    exigencia_ft = calcular_exigencia_limite_ft(
+                        minuto_num,
+                        total_gols
+                    )
+
+                    passa_contexto_ft = (
+                        contexto_gol['aprovado']
+                        and contexto_gol['pontos'] >= exigencia_ft['contexto_minimo']
+                    )
+
+                    passa_caca_gol_ft = (
+                        not exigencia_ft['exigir_caca_gol']
+                        or contexto_gol.get('caca_gol', False)
+                    )
+
+                    if (
+                        aprovado
+                        and score >= exigencia_ft['score_minimo']
+                        and passa_contexto_ft
+                        and passa_caca_gol_ft
+                    ):
                         notificados_limite_ft.add(event_id)
 
                         mensagem = montar_layout_alerta(

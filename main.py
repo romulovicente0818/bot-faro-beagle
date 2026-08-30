@@ -13,8 +13,8 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAF4HkxYj79Gq7HxN7XZz-s9LdOO4LB8fr8'
-CHAT_ID = '-1004321907969'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
+CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
     # Categorias de Base
@@ -1486,12 +1486,16 @@ def calcular_score_05_ht(
     # Regras mínimas
     # ------------------------------------------------------------------
 
-    base_ofensiva = (
-        xg_tot >= 0.45
-        or chutes_gol >= 2
-        or fin_tot >= 7
-        or grandes_chances >= 1
-    )
+    # Filtro mais seletivo: para +0,5 HT exigimos convergência de pelo menos
+    # dois sinais ofensivos, evitando alertas fracos com GOAL SCORE 48-52.
+    sinais_ofensivos = sum([
+        xg_tot >= 0.55,
+        chutes_gol >= 3,
+        grandes_chances >= 1,
+        (fin_tot >= 8 and escanteios >= 3),
+    ])
+
+    base_ofensiva = sinais_ofensivos >= 2
 
     pressao_valida = (
         pressao['pico'] >= 30
@@ -1501,7 +1505,7 @@ def calcular_score_05_ht(
     )
 
     aprovado = (
-        score >= 10
+        score >= 12
         and base_ofensiva
         and pressao_valida
     )
@@ -1662,6 +1666,15 @@ def calcular_score_15_ht(
     )
 
     return aprovado, score, motivos
+
+
+def calcular_linha_limite_ft(gols_c, gols_f):
+    """Define a linha do LIMITE FT exclusivamente pelo placar atual.
+
+    0x0 -> +0.5 | 1x0/0x1 -> +1.5 | 1x1/2x0/0x2 -> +2.5, etc.
+    A linha é sempre total de gols atuais + 0.5, para qualquer lado.
+    """
+    return round(int(gols_c or 0) + int(gols_f or 0) + 0.5, 1)
 
 
 def calcular_score_limite_ft(
@@ -1881,14 +1894,13 @@ def calcular_confianca_independente(
     qualidade,
     prelive_info=None,
 ):
-    """Calcula a Confiança de forma independente do GOAL SCORE.
+    """Confiança independente, calibrada pela convergência dos indicadores.
 
-    A confiança usa somente os sinais qualitativos/estatísticos do jogo,
-    com pesos próprios, e não reutiliza o score interno do filtro.
+    Não usa o GOAL SCORE. Penaliza intensidade caindo e cenários em que os
+    números parecem fortes, mas a produção de perigo real é insuficiente.
     """
     pontos = 4.0
 
-    # xG
     if xg_tot >= 1.20:
         pontos += 1.5
     elif xg_tot >= 0.90:
@@ -1898,7 +1910,6 @@ def calcular_confianca_independente(
     elif xg_tot >= 0.40:
         pontos += 0.4
 
-    # Chutes no alvo
     if chutes_gol >= 6:
         pontos += 1.2
     elif chutes_gol >= 4:
@@ -1908,7 +1919,6 @@ def calcular_confianca_independente(
     elif chutes_gol >= 2:
         pontos += 0.3
 
-    # Grandes chances
     if grandes_chances >= 3:
         pontos += 1.0
     elif grandes_chances >= 2:
@@ -1916,7 +1926,6 @@ def calcular_confianca_independente(
     elif grandes_chances >= 1:
         pontos += 0.4
 
-    # Volume geral
     if fin_tot >= 14:
         pontos += 0.7
     elif fin_tot >= 10:
@@ -1924,7 +1933,6 @@ def calcular_confianca_independente(
     elif fin_tot >= 7:
         pontos += 0.3
 
-    # Pressão
     recente = pressao.get('recente', 0)
     pico = pressao.get('pico', 0)
     aceleracao = pressao.get('aceleracao', 0)
@@ -1941,7 +1949,6 @@ def calcular_confianca_independente(
     elif aceleracao >= 4:
         pontos += 0.2
 
-    # Qualidade e intensidade entram como fatores independentes.
     if qualidade == 'ALTA':
         pontos += 0.4
     elif qualidade == 'MÉDIA':
@@ -1952,11 +1959,36 @@ def calcular_confianca_independente(
     elif intensidade == 'ALTA':
         pontos += 0.2
 
-    # Ajustes pequenos por mercado, sem usar o GOAL SCORE.
+    # Convergência: perigo real precisa aparecer em mais de um indicador.
+    sinais = sum([
+        xg_tot >= (0.55 if mercado == '05_HT' else 0.90),
+        chutes_gol >= (3 if mercado == '05_HT' else 4),
+        grandes_chances >= 1,
+        fin_tot >= (8 if mercado == '05_HT' else 12),
+        recente >= 25 or aceleracao >= 6,
+    ])
+
+    if sinais >= 4:
+        pontos += 0.3
+    elif sinais <= 1:
+        pontos -= 0.7
+    elif sinais == 2:
+        pontos -= 0.2
+
+    # Intensidade caindo é uma trava importante: números acumulados podem
+    # continuar altos mesmo quando o jogo perdeu força.
+    if intensidade == 'CAINDO':
+        pontos -= 0.8
+        if aceleracao <= -10:
+            pontos -= 0.4
+
+    # xG zerado não destrói o sinal, mas também não pode contribuir como se
+    # fosse evidência positiva. Se a produção estiver baixa, reduz confiança.
+    if xg_tot <= 0.01 and chutes_gol <= 2 and grandes_chances == 0:
+        pontos -= 0.5
+
     if mercado == '05_HT':
         pontos += 0.1
-    elif mercado == '15_HT':
-        pontos += 0.0
     elif mercado == 'LIMITE_FT':
         pontos -= 0.1
 
@@ -2089,8 +2121,8 @@ def montar_layout_alerta(
     nomes_mercado = {
         '05_HT': ('🔥 SINAL +0,5 HT', 'OVER 0,5 HT'),
         '15_HT': ('🔥 SINAL +1,5 HT', 'OVER 1,5 HT'),
-        'LIMITE_FT': (f'🎯 SINAL LIMITE FT (+{gols_c + gols_f + 0.5})',
-                      f'OVER LIMITE (+{gols_c + gols_f + 0.5})'),
+        'LIMITE_FT': (f'🎯 SINAL LIMITE FT (+{calcular_linha_limite_ft(gols_c, gols_f)})',
+                      f'OVER LIMITE (+{calcular_linha_limite_ft(gols_c, gols_f)})'),
     }
     titulo, faro = nomes_mercado.get(
         mercado, ('🔥 SINAL', 'OVER')
@@ -2161,43 +2193,55 @@ def registrar_resultado_diario(info, resultado):
     })
 
 
-def enviar_relatorio_diario():
-    global ultimo_relatorio_data
+def _montar_texto_relatorio_diario(agora=None):
+    """Monta um relatório compacto, sem listar os nomes dos jogos.
 
-    agora = obter_horario_brasil()
-    if ultimo_relatorio_data == agora.date():
-        return
+    O Telegram aceita no máximo 4096 caracteres por mensagem. A lista de
+    jogos/alertas fazia o relatório crescer demais, então ela foi removida.
+    Todas as informações estatísticas do relatório permanecem.
+    """
+    agora = agora or obter_horario_brasil()
 
-    # O relatório pertence ao ciclo operacional que começou às 08h.
-    # Portanto, quando ele é enviado às 02h, o período começou no dia anterior.
     inicio_operacao = agora.date() - timedelta(days=1)
     data_inicio = inicio_operacao.strftime('%d/%m/%Y')
     data_fim = agora.strftime('%d/%m/%Y')
+
     total = len(historico_diario)
-    greens = sum(1 for item in historico_diario if item['resultado'] == 'GREEN')
-    reds = sum(1 for item in historico_diario if item['resultado'] == 'RED')
-    aproveitamento = (greens / total * 100) if total else 0.0
+    greens = sum(1 for item in historico_diario if item.get('resultado') == 'GREEN')
+    reds = sum(1 for item in historico_diario if item.get('resultado') == 'RED')
+    anulados = sum(1 for item in historico_diario if item.get('resultado') == 'ANULADO')
+
+    total_validos = greens + reds
+    aproveitamento = greens / total_validos * 100 if total_validos else 0.0
 
     contagem = {
-        '05_HT': {'total': 0, 'green': 0, 'red': 0},
-        '15_HT': {'total': 0, 'green': 0, 'red': 0},
-        'LIMITE_FT': {'total': 0, 'green': 0, 'red': 0},
+        '05_HT': {'total': 0, 'green': 0, 'red': 0, 'anulado': 0},
+        '15_HT': {'total': 0, 'green': 0, 'red': 0, 'anulado': 0},
+        'LIMITE_FT': {'total': 0, 'green': 0, 'red': 0, 'anulado': 0},
     }
 
     for item in historico_diario:
-        mercado = item['mercado']
-        if mercado in contagem:
-            contagem[mercado]['total'] += 1
-            if item['resultado'] == 'GREEN':
-                contagem[mercado]['green'] += 1
-            else:
-                contagem[mercado]['red'] += 1
+        mercado = item.get('mercado', '')
+        if mercado not in contagem:
+            continue
+
+        contagem[mercado]['total'] += 1
+        resultado = item.get('resultado')
+
+        if resultado == 'GREEN':
+            contagem[mercado]['green'] += 1
+        elif resultado == 'RED':
+            contagem[mercado]['red'] += 1
+        elif resultado == 'ANULADO':
+            contagem[mercado]['anulado'] += 1
 
     nomes = {
         '05_HT': '+0,5 HT',
         '15_HT': '+1,5 HT',
         'LIMITE_FT': 'Limite FT',
     }
+
+    pendentes = len(alertas_pendentes)
 
     linhas = [
         '🐶 *FARO DE BEAGLE*',
@@ -2209,80 +2253,73 @@ def enviar_relatorio_diario():
         f'🚨 Alertas confirmados: {total}',
         f'🟢 Greens: {greens}',
         f'🔴 Reds: {reds}',
+        f'🔄 Anulados: {anulados}',
         f'📈 Aproveitamento: {aproveitamento:.1f}%',
+        f'⏳ Em aberto às 02h: {pendentes}',
         '',
         '━━━━━━━━━━━━━━━━━━',
     ]
 
     for mercado in ('05_HT', '15_HT', 'LIMITE_FT'):
         dados = contagem[mercado]
-        taxa = (dados['green'] / dados['total'] * 100) if dados['total'] else 0.0
+        validos_mercado = dados['green'] + dados['red']
+        taxa = dados['green'] / validos_mercado * 100 if validos_mercado else 0.0
+
         linhas.extend([
             '',
             f"🔥 *{nomes[mercado]}*",
             f"Alertas: {dados['total']}",
             f"🟢 Green: {dados['green']}",
             f"🔴 Red: {dados['red']}",
+            f"🔄 Anulados: {dados['anulado']}",
             f"📊 Aproveitamento: {taxa:.1f}%",
         ])
 
-    linhas.extend(['', '━━━━━━━━━━━━━━━━━━', '', '📋 *ALERTAS CONFIRMADOS*'])
-
-    if historico_diario:
-        for item in historico_diario:
-            marcador = '🟢' if item['resultado'] == 'GREEN' else '🔴'
-            partes = item['mensagem_original'].splitlines()
-            resumo = []
-            for linha in partes:
-                if (
-                    'FARO DE BEAGLE' in linha
-                    or 'Liga:' in linha
-                    or '🏆' in linha
-                    or ' x ' in linha
-                    or '⏱️' in linha
-                ):
-                    resumo.append(linha.replace('*', ''))
-            linhas.append(f"{marcador} " + " | ".join(resumo[:4]))
-    else:
-        linhas.append('Nenhum alerta confirmado no período.')
-
-    pendentes = list(alertas_pendentes.values())
-    if pendentes:
-        linhas.extend(['', '⏳ *ALERTAS AINDA EM ABERTO ÀS 02H*'])
-        for info in pendentes:
-            partes = info.get('mensagem_original', '').splitlines()
-            resumo = []
-            for linha in partes:
-                if (
-                    'FARO DE BEAGLE' in linha
-                    or 'Liga:' in linha
-                    or '🏆' in linha
-                    or ' x ' in linha
-                    or '⏱️' in linha
-                ):
-                    resumo.append(linha.replace('*', ''))
-            linhas.append('⏳ ' + ' | '.join(resumo[:4]))
-
     linhas.extend([
+        '',
+        '━━━━━━━━━━━━━━━━━━',
+        '📋 *RESUMO*',
+        'Os nomes dos jogos não são listados neste relatório.',
         '',
         '━━━━━━━━━━━━━━━━━━',
         '🐶 *FARO DE BEAGLE*',
         '📊 Operação encerrada às 02:00.',
     ])
 
-    mensagem_relatorio = '\n'.join(linhas)
+    return '\n'.join(linhas)
+
+
+def enviar_relatorio_diario():
+    global ultimo_relatorio_data
+
+    agora = obter_horario_brasil()
+
+    if ultimo_relatorio_data == agora.date():
+        return
+
+    # Relatório compacto: não inclui os nomes dos jogos.
+    # Isso evita o erro HTTP 400 "Bad Request: message is too long".
+    mensagem_relatorio = _montar_texto_relatorio_diario(agora)
+
     print(
         f"[{agora.strftime('%H:%M:%S')}] Tentando enviar relatório diário "
-        f"do ciclo {data_inicio} 08h -> {data_fim} 02h..."
+        f"do ciclo {(agora.date() - timedelta(days=1)).strftime('%d/%m/%Y')} "
+        f"08h -> {agora.strftime('%d/%m/%Y')} 02h..."
     )
+
     message_id = enviar_alerta(mensagem_relatorio)
+
     if message_id:
         print(
             f"[{agora.strftime('%H:%M:%S')}] Relatório diário enviado "
             f"com sucesso | message_id={message_id}"
         )
+
         ultimo_relatorio_data = agora.date()
         relatorios_por_message_id[message_id] = mensagem_relatorio
+
+        # Alertas que atravessaram 02h continuam vinculados ao relatório.
+        # Quando forem confirmados, o relatório será reconstruído sem nomes.
         for info in alertas_pendentes.values():
             info['relatorio_message_id'] = message_id
             info['relatorio_mensagem'] = mensagem_relatorio
@@ -2294,49 +2331,35 @@ def enviar_relatorio_diario():
 
 
 def atualizar_relatorio_pos_02h(info, resultado):
-    """Atualiza o relatório das 02h quando um alerta que estava aberto é confirmado depois."""
+    """Atualiza o relatório sem acrescentar nomes de jogos."""
     report_id = info.get('relatorio_message_id')
+
     if not report_id:
         return
 
-    base = relatorios_por_message_id.get(report_id, info.get('relatorio_mensagem', ''))
-    if not base:
-        return
+    agora = obter_horario_brasil()
+    nova = _montar_texto_relatorio_diario(agora)
 
-    marcador = '🟢' if resultado == 'GREEN' else '🔴'
-    partes = info.get('mensagem_original', '').splitlines()
-    resumo = []
-    for linha in partes:
-        if (
-            'FARO DE BEAGLE' in linha
-            or 'Liga:' in linha
-            or '🏆' in linha
-            or ' x ' in linha
-            or '⏱️' in linha
-        ):
-            resumo.append(linha.replace('*', ''))
+    editar_alerta(report_id, nova)
 
-    atualizacao = (
-        '\n\n━━━━━━━━━━━━━━━━━━\n'
-        '🔄 *ATUALIZAÇÃO PÓS-02H*\n'
-        f'{marcador} ' + ' | '.join(resumo[:4]) + '\n'
-        f'{marcador} Resultado confirmado: {resultado}'
-    )
-
-    nova = base + atualizacao
-    if editar_alerta(report_id, nova) is None:
-        # editar_alerta não retorna status; mantemos o texto local para futuras atualizações.
-        pass
     relatorios_por_message_id[report_id] = nova
-
+    info['relatorio_mensagem'] = nova
 
 
 def validar_alertas_enviados(jogos_dict):
-    """Verifica o placar e edita o alerta apenas anexando os emojis de GREEN ou RED ao final."""
+    """
+    Valida alertas somente no encerramento do período correspondente.
+
+    +0,5 HT / +1,5 HT: resultado somente no fim do 1º tempo.
+    Limite FT: resultado somente no fim do jogo.
+
+    Se o placar subir após o alerta e depois voltar para o placar-base,
+    tratamos como possível gol anulado/correção de placar e anulamos o
+    alerta com 🔄🔄🔄, sem contar como Green ou Red.
+    """
     chaves_para_remover = []
 
     for chave_alerta, info in list(alertas_pendentes.items()):
-
         event_id = info['event_id']
         message_id = info['message_id']
         gols_no_alerta = info['gols_alerta']
@@ -2344,45 +2367,31 @@ def validar_alertas_enviados(jogos_dict):
         msg_original = info['mensagem_original']
 
         item_jogo = jogos_dict.get(event_id)
-
         if not item_jogo:
             continue
 
-        gols_c = item_jogo.get(
-            'homeScore', {}
-        ).get(
-            'current',
-            0
-        )
-
-        gols_f = item_jogo.get(
-            'awayScore', {}
-        ).get(
-            'current',
-            0
-        )
-
+        gols_c = item_jogo.get('homeScore', {}).get('current', 0)
+        gols_f = item_jogo.get('awayScore', {}).get('current', 0)
         gols_atuais = gols_c + gols_f
 
-        status_desc = str(
-            item_jogo.get('status', {})
-            .get('description', '')
-        ).lower()
+        # Guarda o maior placar observado enquanto o alerta esteve aberto.
+        maior_total = max(
+            int(info.get('maior_total_observado', gols_no_alerta) or gols_no_alerta),
+            gols_atuais
+        )
+        info['maior_total_observado'] = maior_total
 
+        status_desc = str(
+            item_jogo.get('status', {}).get('description', '')
+        ).lower()
         time_status = str(
-            item_jogo.get('status', {})
-            .get('type', '')
+            item_jogo.get('status', {}).get('type', '')
         ).lower()
 
         eh_intervalo = (
             'halftime' in status_desc
             or 'ht' in status_desc
             or time_status == 'halftime'
-        )
-
-        eh_2h = (
-            '2nd' in status_desc
-            or time_status == '2nd'
         )
 
         eh_finalizado = (
@@ -2392,77 +2401,64 @@ def validar_alertas_enviados(jogos_dict):
             or 'extra' in status_desc
         )
 
-        if gols_atuais > gols_no_alerta:
-
+        # --------------------------------------------------------------
+        # GOL ANULADO / CORREÇÃO DO PLACAR
+        # --------------------------------------------------------------
+        # Ex.: alerta em 1x0 -> gol faz 2x0 -> VAR anula -> volta a 1x0.
+        # O maior placar observado permite detectar a reversão mesmo que
+        # a atualização aconteça alguns ciclos depois.
+        if maior_total > gols_no_alerta and gols_atuais < maior_total:
             nova_mensagem = (
                 f"{msg_original}\n\n"
-                f"✅️✅️✅️"
+                f"🔄🔄🔄"
             )
 
-            editar_alerta(
-                message_id,
-                nova_mensagem
-            )
-
-            registrar_resultado_diario(info, 'GREEN')
+            editar_alerta(message_id, nova_mensagem)
+            registrar_resultado_diario(info, 'ANULADO')
             if info.get('relatorio_message_id'):
-                atualizar_relatorio_pos_02h(info, 'GREEN')
+                atualizar_relatorio_pos_02h(info, 'ANULADO')
 
-            chaves_para_remover.append(
-                chave_alerta
-            )
+            chaves_para_remover.append(chave_alerta)
+            continue
+
+        # --------------------------------------------------------------
+        # GREEN/RED SOMENTE NO ENCERRAMENTO DO PERÍODO
+        # --------------------------------------------------------------
+        if mercado in ['05_HT', '15_HT']:
+            if not (eh_intervalo or eh_finalizado):
+                continue
+
+            # O mercado precisa de pelo menos um gol adicional em relação
+            # ao placar que existia quando o alerta foi emitido.
+            green = gols_atuais > gols_no_alerta
+
+        elif mercado == 'LIMITE_FT':
+            if not eh_finalizado:
+                continue
+
+            # Limite FT = exatamente o total de gols do alerta + 0,5.
+            green = gols_atuais > gols_no_alerta
 
         else:
+            continue
 
-            if mercado in ['05_HT', '15_HT'] and (
-                eh_intervalo
-                or eh_2h
-                or eh_finalizado
-            ):
+        resultado = 'GREEN' if green else 'RED'
+        emoji = '✅️✅️✅️' if green else '❌️❌️❌️'
 
-                nova_mensagem = (
-                    f"{msg_original}\n\n"
-                    f"❌️❌️❌️"
-                )
+        nova_mensagem = (
+            f"{msg_original}\n\n"
+            f"{emoji}"
+        )
 
-                editar_alerta(
-                    message_id,
-                    nova_mensagem
-                )
+        editar_alerta(message_id, nova_mensagem)
+        registrar_resultado_diario(info, resultado)
+        if info.get('relatorio_message_id'):
+            atualizar_relatorio_pos_02h(info, resultado)
 
-                registrar_resultado_diario(info, 'RED')
-                if info.get('relatorio_message_id'):
-                    atualizar_relatorio_pos_02h(info, 'RED')
-
-                chaves_para_remover.append(
-                    chave_alerta
-                )
-
-            elif mercado == 'LIMITE_FT' and eh_finalizado:
-
-                nova_mensagem = (
-                    f"{msg_original}\n\n"
-                    f"❌️❌️❌️"
-                )
-
-                editar_alerta(
-                    message_id,
-                    nova_mensagem
-                )
-
-                registrar_resultado_diario(info, 'RED')
-                if info.get('relatorio_message_id'):
-                    atualizar_relatorio_pos_02h(info, 'RED')
-
-                chaves_para_remover.append(
-                    chave_alerta
-                )
+        chaves_para_remover.append(chave_alerta)
 
     for ch in chaves_para_remover:
-        alertas_pendentes.pop(
-            ch,
-            None
-        )
+        alertas_pendentes.pop(ch, None)
 
 
 def obter_evento_sofascore(event_id):
@@ -2908,6 +2904,7 @@ def checar_jogos_ao_vivo():
                                 'event_id': event_id,
                                 'message_id': msg_id,
                                 'gols_alerta': total_gols,
+                                'maior_total_observado': total_gols,
                                 'mercado': '05_HT',
                                 'mensagem_original': mensagem
                             }
@@ -2954,6 +2951,18 @@ def checar_jogos_ao_vivo():
                         contexto_competitivo
                     )
 
+                    # Após 25', com um único gol, o +1,5 HT precisa mostrar
+                    # produção realmente consistente; preservamos a lógica base
+                    # do mercado e apenas eliminamos os sinais tardios mais fracos.
+                    if minuto_num >= 25:
+                        sinais_tardios_15 = sum([
+                            xg_tot >= 0.85,
+                            chutes_gol >= 3,
+                            grandes_chances >= 2,
+                            fin_tot >= 8 and escanteios >= 3,
+                        ])
+                        aprovado = aprovado and score >= 13 and sinais_tardios_15 >= 1
+
                     if aprovado and contexto_gol['aprovado']:
                         notificados_15_ht.add(event_id)
 
@@ -2998,6 +3007,7 @@ def checar_jogos_ao_vivo():
                                 'event_id': event_id,
                                 'message_id': msg_id,
                                 'gols_alerta': total_gols,
+                                'maior_total_observado': total_gols,
                                 'mercado': '15_HT',
                                 'mensagem_original': mensagem
                             }
@@ -3113,6 +3123,7 @@ def checar_jogos_ao_vivo():
                                 'event_id': event_id,
                                 'message_id': msg_id,
                                 'gols_alerta': total_gols,
+                                'maior_total_observado': total_gols,
                                 'mercado': 'LIMITE_FT',
                                 'mensagem_original': mensagem
                             }

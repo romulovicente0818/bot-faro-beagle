@@ -13,8 +13,8 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAF4HkxYj79Gq7HxN7XZz-s9LdOO4LB8fr8'
-CHAT_ID = '-1004321907969'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
+CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
     # Categorias de Base
@@ -576,6 +576,77 @@ def extrair_xg_sofascore(stats_data):
     )
 
     return xg_total_alt, xg_h_alt, xg_a_alt
+
+
+def obter_xg_por_shotmap_sofascore(event_id):
+    """Calcula o xG somando o xG individual das finalizações do SofaScore.
+
+    É usado somente quando o bloco de estatísticas não fornece xG. Assim,
+    quando o SofaScore disponibiliza xG por finalização, o bot consegue
+    reconstruir o xG do jogo sem inventar uma estimativa própria.
+    """
+    try:
+        res = sofascore_get(f'event/{event_id}/shotmap', timeout=10)
+        if res is None or res.status_code != 200:
+            return 0.0, 0.0, 0.0
+
+        shots = res.json().get('shotmap', []) or []
+        total = 0.0
+        home = 0.0
+        away = 0.0
+
+        for shot in shots:
+            try:
+                valor = float(shot.get('xg', 0) or 0)
+            except (TypeError, ValueError):
+                continue
+
+            if valor < 0:
+                continue
+
+            total += valor
+            is_home = shot.get('isHome')
+            if is_home is True:
+                home += valor
+            elif is_home is False:
+                away += valor
+            else:
+                team = shot.get('team') or {}
+                # Se o endpoint não trouxer isHome, preserva o xG total.
+                # O detalhamento por equipe fica zero nesse caso.
+                if isinstance(team, dict):
+                    pass
+
+        if total <= 0:
+            return 0.0, 0.0, 0.0
+
+        # Se o endpoint não permitir separar os lados, não exibir uma divisão
+        # falsa: o total continua válido para os filtros.
+        if home + away <= 0:
+            return total, 0.0, 0.0
+
+        return total, home, away
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+
+def calcular_xg_estimado_por_estatisticas(fin_h, fin_a, chutes_h, chutes_a, gc_h, gc_a):
+    """Fallback conservador quando nem xG nem shotmap estão disponíveis.
+
+    Não pretende reproduzir o modelo proprietário do SofaScore; serve apenas
+    para evitar xG artificialmente zerado quando há produção ofensiva real.
+    """
+    def estimar(finalizacoes, no_alvo, grandes_chances):
+        valor = (
+            finalizacoes * 0.025
+            + no_alvo * 0.12
+            + grandes_chances * 0.30
+        )
+        return max(0.0, round(valor, 2))
+
+    xg_h = estimar(fin_h, chutes_h, gc_h)
+    xg_a = estimar(fin_a, chutes_a, gc_a)
+    return round(xg_h + xg_a, 2), xg_h, xg_a
 
 
 def eh_partida_valida(nome_liga, time_casa, time_fora):
@@ -2209,15 +2280,13 @@ def _montar_texto_relatorio_diario(agora=None):
     total = len(historico_diario)
     greens = sum(1 for item in historico_diario if item.get('resultado') == 'GREEN')
     reds = sum(1 for item in historico_diario if item.get('resultado') == 'RED')
-    anulados = sum(1 for item in historico_diario if item.get('resultado') == 'ANULADO')
-
     total_validos = greens + reds
     aproveitamento = greens / total_validos * 100 if total_validos else 0.0
 
     contagem = {
-        '05_HT': {'total': 0, 'green': 0, 'red': 0, 'anulado': 0},
-        '15_HT': {'total': 0, 'green': 0, 'red': 0, 'anulado': 0},
-        'LIMITE_FT': {'total': 0, 'green': 0, 'red': 0, 'anulado': 0},
+        '05_HT': {'total': 0, 'green': 0, 'red': 0},
+        '15_HT': {'total': 0, 'green': 0, 'red': 0},
+        'LIMITE_FT': {'total': 0, 'green': 0, 'red': 0},
     }
 
     for item in historico_diario:
@@ -2232,8 +2301,6 @@ def _montar_texto_relatorio_diario(agora=None):
             contagem[mercado]['green'] += 1
         elif resultado == 'RED':
             contagem[mercado]['red'] += 1
-        elif resultado == 'ANULADO':
-            contagem[mercado]['anulado'] += 1
 
     nomes = {
         '05_HT': '+0,5 HT',
@@ -2253,7 +2320,6 @@ def _montar_texto_relatorio_diario(agora=None):
         f'🚨 Alertas confirmados: {total}',
         f'🟢 Greens: {greens}',
         f'🔴 Reds: {reds}',
-        f'🔄 Anulados: {anulados}',
         f'📈 Aproveitamento: {aproveitamento:.1f}%',
         f'⏳ Em aberto às 02h: {pendentes}',
         '',
@@ -2271,20 +2337,8 @@ def _montar_texto_relatorio_diario(agora=None):
             f"Alertas: {dados['total']}",
             f"🟢 Green: {dados['green']}",
             f"🔴 Red: {dados['red']}",
-            f"🔄 Anulados: {dados['anulado']}",
             f"📊 Aproveitamento: {taxa:.1f}%",
         ])
-
-    linhas.extend([
-        '',
-        '━━━━━━━━━━━━━━━━━━',
-        '📋 *RESUMO*',
-        'Os nomes dos jogos não são listados neste relatório.',
-        '',
-        '━━━━━━━━━━━━━━━━━━',
-        '🐶 *FARO DE BEAGLE*',
-        '📊 Operação encerrada às 02:00.',
-    ])
 
     return '\n'.join(linhas)
 
@@ -2353,9 +2407,13 @@ def validar_alertas_enviados(jogos_dict):
     +0,5 HT / +1,5 HT: resultado somente no fim do 1º tempo.
     Limite FT: resultado somente no fim do jogo.
 
-    Se o placar subir após o alerta e depois voltar para o placar-base,
-    tratamos como possível gol anulado/correção de placar e anulamos o
-    alerta com 🔄🔄🔄, sem contar como Green ou Red.
+    Se o placar subir após o alerta e depois voltar, tratamos isso como
+    correção de placar/gol anulado. O alerta NÃO é anulado: o mercado e o
+    placar-base são recalculados para refletir o placar corrigido.
+
+    Ex.: alerta +1,5 HT em 1x0 -> gol faz 2x0 -> VAR anula -> volta a 1x0:
+    o alerta permanece +1,5 HT. Se o alerta tiver sido emitido logo após
+    1x0 e o gol original for anulado, voltando para 0x0, ele passa a +0,5 HT.
     """
     chaves_para_remover = []
 
@@ -2402,24 +2460,65 @@ def validar_alertas_enviados(jogos_dict):
         )
 
         # --------------------------------------------------------------
-        # GOL ANULADO / CORREÇÃO DO PLACAR
+        # CORREÇÃO DE PLACAR / GOL ANULADO
         # --------------------------------------------------------------
-        # Ex.: alerta em 1x0 -> gol faz 2x0 -> VAR anula -> volta a 1x0.
-        # O maior placar observado permite detectar a reversão mesmo que
-        # a atualização aconteça alguns ciclos depois.
-        if maior_total > gols_no_alerta and gols_atuais < maior_total:
-            nova_mensagem = (
-                f"{msg_original}\n\n"
-                f"🔄🔄🔄"
-            )
+        # Se o SofaScore registrou temporariamente um gol e depois voltou
+        # para o placar anterior, não anulamos o alerta. Rebaixamos o
+        # mercado para o que realmente passou a ser necessário.
+        if gols_atuais < maior_total and gols_atuais >= 0:
+            novo_mercado = mercado
 
-            editar_alerta(message_id, nova_mensagem)
-            registrar_resultado_diario(info, 'ANULADO')
-            if info.get('relatorio_message_id'):
-                atualizar_relatorio_pos_02h(info, 'ANULADO')
+            if mercado == '15_HT' and gols_atuais == 0:
+                novo_mercado = '05_HT'
 
-            chaves_para_remover.append(chave_alerta)
-            continue
+            if gols_atuais != gols_no_alerta or novo_mercado != mercado:
+                if novo_mercado == '05_HT':
+                    msg_corrigida = msg_original.replace(
+                        '🔥 SINAL +1,5 HT', '🔥 SINAL +0,5 HT'
+                    ).replace(
+                        'OVER 1,5 HT', 'OVER 0,5 HT'
+                    )
+                elif novo_mercado == '15_HT':
+                    msg_corrigida = msg_original.replace(
+                        '🔥 SINAL +0,5 HT', '🔥 SINAL +1,5 HT'
+                    ).replace(
+                        'OVER 0,5 HT', 'OVER 1,5 HT'
+                    )
+                else:
+                    nova_linha = calcular_linha_limite_ft(gols_c, gols_f)
+                    import re
+                    msg_corrigida = re.sub(
+                        r'🎯 SINAL LIMITE FT \(\+[0-9]+\.[05]\)',
+                        f'🎯 SINAL LIMITE FT (+{nova_linha})',
+                        msg_original
+                    )
+                    msg_corrigida = re.sub(
+                        r'OVER LIMITE \(\+[0-9]+\.[05]\)',
+                        f'OVER LIMITE (+{nova_linha})',
+                        msg_corrigida
+                    )
+
+                import re
+                msg_corrigida = re.sub(
+                    r'⏱️ .*? — [0-9]+x[0-9]+',
+                    f'⏱️ {item_jogo.get("status", {}).get("description", "")} — {gols_c}x{gols_f}',
+                    msg_corrigida,
+                    count=1
+                )
+
+                # Mantém o alerta aberto com o novo placar-base.
+                info['mercado'] = novo_mercado
+                info['gols_alerta'] = gols_atuais
+                info['maior_total_observado'] = gols_atuais
+                info['mensagem_original'] = msg_corrigida
+                mercado = novo_mercado
+                gols_no_alerta = gols_atuais
+                msg_original = msg_corrigida
+                editar_alerta(message_id, msg_corrigida)
+
+                # O alerta corrigido continua pendente; não entra no relatório
+                # como Green/Red até o encerramento correto do mercado.
+                continue
 
         # --------------------------------------------------------------
         # GREEN/RED SOMENTE NO ENCERRAMENTO DO PERÍODO
@@ -2774,6 +2873,19 @@ def checar_jogos_ao_vivo():
                     stats
                 )
             )
+
+            # Se o bloco de estatísticas vier com xG zerado, tenta reconstruir
+            # pelo xG individual das finalizações no shotmap do SofaScore.
+            # Só usa a estimativa estatística como último recurso.
+            if xg_tot <= 0.01:
+                xg_tot, xg_h, xg_a = obter_xg_por_shotmap_sofascore(event_id)
+
+            if xg_tot <= 0.01:
+                xg_tot, xg_h, xg_a = calcular_xg_estimado_por_estatisticas(
+                    fin_h_int, fin_a_int,
+                    cg_h_int, cg_a_int,
+                    int(gc_h), int(gc_a)
+                )
 
             linha_xg = (
                 f"📈 *xG Acumulado:* "

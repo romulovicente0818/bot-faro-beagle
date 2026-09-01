@@ -13,8 +13,8 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAF4HkxYj79Gq7HxN7XZz-s9LdOO4LB8fr8'
-CHAT_ID = '-1004321907969'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
+CHAT_ID = '1865504705'
 
 TERMOS_IGNORADOS = [
     # Categorias de Base
@@ -578,7 +578,7 @@ def extrair_xg_sofascore(stats_data):
     return xg_total_alt, xg_h_alt, xg_a_alt
 
 
-def obter_xg_por_shotmap_sofascore(event_id):
+def obter_xg_por_shotmap_sofascore(event_id, home_team_id=None, away_team_id=None):
     """Calcula o xG somando o xG individual das finalizações do SofaScore.
 
     É usado somente quando o bloco de estatísticas não fornece xG. Assim,
@@ -606,16 +606,17 @@ def obter_xg_por_shotmap_sofascore(event_id):
 
             total += valor
             is_home = shot.get('isHome')
+            team = shot.get('team') or {}
+            team_id = team.get('id') if isinstance(team, dict) else None
+
             if is_home is True:
                 home += valor
             elif is_home is False:
                 away += valor
-            else:
-                team = shot.get('team') or {}
-                # Se o endpoint não trouxer isHome, preserva o xG total.
-                # O detalhamento por equipe fica zero nesse caso.
-                if isinstance(team, dict):
-                    pass
+            elif home_team_id is not None and team_id is not None and str(team_id) == str(home_team_id):
+                home += valor
+            elif away_team_id is not None and team_id is not None and str(team_id) == str(away_team_id):
+                away += valor
 
         if total <= 0:
             return 0.0, 0.0, 0.0
@@ -2066,7 +2067,27 @@ def calcular_confianca_independente(
     if prelive_info:
         pontos += float(prelive_info.get('ajuste', 0.0))
 
-    return max(0.0, min(10.0, round(pontos, 1)))
+    # CALIBRAÇÃO FINAL DA CONFIANÇA
+    # 10/10 deixa de ser exibido. Além disso, a confiança máxima passa a
+    # depender da quantidade de evidência ofensiva disponível no jogo.
+    # Isso evita que um único conjunto de estatísticas acumuladas produza
+    # 9.8-10.0 em jogos com xG/produção ainda modestos.
+    if xg_tot < 1.00:
+        teto_confianca = 8.5
+    elif xg_tot < 1.50:
+        teto_confianca = 9.0
+    elif xg_tot < 2.00:
+        teto_confianca = 9.4
+    else:
+        teto_confianca = 9.5
+
+    # Sem convergência forte, não permite confiança excepcional.
+    if sinais <= 2:
+        teto_confianca = min(teto_confianca, 8.5)
+    elif sinais == 3:
+        teto_confianca = min(teto_confianca, 9.0)
+
+    return max(0.0, min(teto_confianca, round(pontos, 1)))
 
 
 def montar_motivos_exibicao(
@@ -2878,7 +2899,11 @@ def checar_jogos_ao_vivo():
             # pelo xG individual das finalizações no shotmap do SofaScore.
             # Só usa a estimativa estatística como último recurso.
             if xg_tot <= 0.01:
-                xg_tot, xg_h, xg_a = obter_xg_por_shotmap_sofascore(event_id)
+                xg_tot, xg_h, xg_a = obter_xg_por_shotmap_sofascore(
+                    event_id,
+                    item.get('homeTeam', {}).get('id'),
+                    item.get('awayTeam', {}).get('id')
+                )
 
             if xg_tot <= 0.01:
                 xg_tot, xg_h, xg_a = calcular_xg_estimado_por_estatisticas(

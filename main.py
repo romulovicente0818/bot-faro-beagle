@@ -13,7 +13,7 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAF4HkxYj79Gq7HxN7XZz-s9LdOO4LB8fr8'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
 CHAT_ID = '-1004321907969'
 
 TERMOS_IGNORADOS = [
@@ -2411,6 +2411,9 @@ def montar_motivos_exibicao(
     return motivos[:5] if motivos else ['sinais ofensivos suficientes para o filtro']
 
 
+MIN_CONFIANCA_ALERTA = 6.5
+
+
 def stake_por_confianca(confianca):
     """Define a unidade sugerida sem alterar o cálculo da confiança."""
     confianca = float(confianca or 0)
@@ -2478,6 +2481,11 @@ def montar_layout_alerta(
         contexto_competitivo,
         prelive_info,
     )
+
+    # Abaixo de 6,5/10 não há alerta: a stake de 0,5u é reservada
+    # apenas para entradas que já passaram pelo piso mínimo de confiança.
+    if confianca < MIN_CONFIANCA_ALERTA:
+        return None
 
     stake, stake_emoji = stake_por_confianca(confianca)
 
@@ -3339,8 +3347,6 @@ def checar_jogos_ao_vivo():
                     )
 
                     if aprovado and contexto_gol['aprovado']:
-                        notificados_05_ht.add(event_id)
-
                         mensagem = montar_layout_alerta(
                             '05_HT',
                             liga_formatada,
@@ -3376,7 +3382,11 @@ def checar_jogos_ao_vivo():
                             contexto_competitivo
                         )
 
-                        msg_id = enviar_alerta(mensagem)
+                        if mensagem is not None:
+                            notificados_05_ht.add(event_id)
+                            msg_id = enviar_alerta(mensagem)
+                        else:
+                            msg_id = None
                         if msg_id:
                             alertas_pendentes[f"{event_id}_05_HT"] = {
                                 'event_id': event_id,
@@ -3442,8 +3452,6 @@ def checar_jogos_ao_vivo():
                         aprovado = aprovado and score >= 13 and sinais_tardios_15 >= 1
 
                     if aprovado and contexto_gol['aprovado']:
-                        notificados_15_ht.add(event_id)
-
                         mensagem = montar_layout_alerta(
                             '15_HT',
                             liga_formatada,
@@ -3479,7 +3487,11 @@ def checar_jogos_ao_vivo():
                             contexto_competitivo
                         )
 
-                        msg_id = enviar_alerta(mensagem)
+                        if mensagem is not None:
+                            notificados_15_ht.add(event_id)
+                            msg_id = enviar_alerta(mensagem)
+                        else:
+                            msg_id = None
                         if msg_id:
                             alertas_pendentes[f"{event_id}_15_HT"] = {
                                 'event_id': event_id,
@@ -3558,8 +3570,6 @@ def checar_jogos_ao_vivo():
                         and passa_contexto_ft
                         and passa_caca_gol_ft
                     ):
-                        notificados_limite_ft.add(event_id)
-
                         mensagem = montar_layout_alerta(
                             'LIMITE_FT',
                             liga_formatada,
@@ -3595,7 +3605,11 @@ def checar_jogos_ao_vivo():
                             contexto_competitivo
                         )
 
-                        msg_id = enviar_alerta(mensagem)
+                        if mensagem is not None:
+                            notificados_limite_ft.add(event_id)
+                            msg_id = enviar_alerta(mensagem)
+                        else:
+                            msg_id = None
                         if msg_id:
                             alertas_pendentes[f"{event_id}_LIMITE_FT"] = {
                                 'event_id': event_id,

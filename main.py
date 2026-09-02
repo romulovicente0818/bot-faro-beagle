@@ -13,7 +13,7 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAF4HkxYj79Gq7HxN7XZz-s9LdOO4LB8fr8'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
 CHAT_ID = '-1004321907969'
 
 TERMOS_IGNORADOS = [
@@ -414,67 +414,80 @@ def obter_pressao_grafico_sofascore(event_id):
                     'recente': 0,
                     'aceleracao': 0,
                     'direcao': 0,
-                    'direcao_anterior': 0,
-                    'tendencia': 'ESTÁVEL',
                     'texto': ''
                 }
 
-            # Leitura do fluxo: comparamos a pressão REALMENTE recente com a
-            # pressão imediatamente anterior. A versão anterior usava apenas
-            # a diferença de intensidade absoluta, o que podia chamar de
-            # "CRESCENTE" um jogo em que a pressão simplesmente mudou de lado.
-            ultimos_pontos = points[-12:] if len(points) >= 12 else points
+            # Mantemos a leitura do gráfico do SofaScore.
+            # Usamos uma janela curta para detectar pressão atual.
+            ultimos_pontos = (
+                points[-10:]
+                if len(points) >= 10
+                else points
+            )
 
             valores = []
+
             for p in ultimos_pontos:
                 try:
-                    valores.append(float(p.get('value', 0)))
+                    valores.append(
+                        float(p.get('value', 0))
+                    )
                 except Exception:
-                    valores.append(0.0)
+                    valores.append(0)
 
             if not valores:
                 return {
-                    'pico': 0, 'media': 0, 'recente': 0,
-                    'aceleracao': 0, 'direcao': 0,
-                    'direcao_anterior': 0, 'texto': ''
+                    'pico': 0,
+                    'media': 0,
+                    'recente': 0,
+                    'aceleracao': 0,
+                    'direcao': 0,
+                    'texto': ''
                 }
 
-            metade = max(1, len(valores) // 2)
+            metade = max(
+                1,
+                len(valores) // 2
+            )
+
             primeira_metade = valores[:metade]
             segunda_metade = valores[metade:]
 
-            media_abs = sum(abs(x) for x in valores) / len(valores)
+            media_abs = (
+                sum(abs(x) for x in valores)
+                / len(valores)
+            )
+
             recente_abs = (
-                sum(abs(x) for x in segunda_metade) / len(segunda_metade)
-                if segunda_metade else media_abs
+                sum(abs(x) for x in segunda_metade)
+                / len(segunda_metade)
+                if segunda_metade
+                else media_abs
             )
+
             media_anterior = (
-                sum(abs(x) for x in primeira_metade) / len(primeira_metade)
-                if primeira_metade else 0
+                sum(abs(x) for x in primeira_metade)
+                / len(primeira_metade)
+                if primeira_metade
+                else 0
             )
 
-            pico_pressao = max(abs(x) for x in valores)
-            aceleracao = recente_abs - media_anterior
+            pico_pressao = max(
+                abs(x) for x in valores
+            )
 
-            # Valor positivo = pressão Casa; negativo = pressão Fora.
+            aceleracao = (
+                recente_abs - media_anterior
+            )
+
+            # Valor positivo = pressão Casa
+            # Valor negativo = pressão Fora
             direcao = (
-                sum(segunda_metade) / len(segunda_metade)
-                if segunda_metade else 0
+                sum(segunda_metade)
+                / len(segunda_metade)
+                if segunda_metade
+                else 0
             )
-            direcao_anterior = (
-                sum(primeira_metade) / len(primeira_metade)
-                if primeira_metade else 0
-            )
-
-            # Tendência de intensidade: só considera CRESCENTE/CAINDO quando
-            # a diferença é material. Isso evita falsos "crescentes" por troca
-            # de lado no gráfico.
-            if aceleracao >= 8:
-                tendencia = 'CRESCENTE'
-            elif aceleracao <= -8:
-                tendencia = 'CAINDO'
-            else:
-                tendencia = 'ESTÁVEL'
 
             texto_fluxo = (
                 f"🔥 *Pressão no Gráfico:* "
@@ -489,8 +502,6 @@ def obter_pressao_grafico_sofascore(event_id):
                 'recente': recente_abs,
                 'aceleracao': aceleracao,
                 'direcao': direcao,
-                'direcao_anterior': direcao_anterior,
-                'tendencia': tendencia,
                 'texto': texto_fluxo
             }
 
@@ -503,8 +514,6 @@ def obter_pressao_grafico_sofascore(event_id):
         'recente': 0,
         'aceleracao': 0,
         'direcao': 0,
-        'direcao_anterior': 0,
-        'tendencia': 'ESTÁVEL',
         'texto': ''
     }
 
@@ -569,7 +578,7 @@ def extrair_xg_sofascore(stats_data):
     return xg_total_alt, xg_h_alt, xg_a_alt
 
 
-def obter_xg_por_shotmap_sofascore(event_id):
+def obter_xg_por_shotmap_sofascore(event_id, home_team_id=None, away_team_id=None):
     """Calcula o xG somando o xG individual das finalizações do SofaScore.
 
     É usado somente quando o bloco de estatísticas não fornece xG. Assim,
@@ -597,16 +606,17 @@ def obter_xg_por_shotmap_sofascore(event_id):
 
             total += valor
             is_home = shot.get('isHome')
+            team = shot.get('team') or {}
+            team_id = team.get('id') if isinstance(team, dict) else None
+
             if is_home is True:
                 home += valor
             elif is_home is False:
                 away += valor
-            else:
-                team = shot.get('team') or {}
-                # Se o endpoint não trouxer isHome, preserva o xG total.
-                # O detalhamento por equipe fica zero nesse caso.
-                if isinstance(team, dict):
-                    pass
+            elif home_team_id is not None and team_id is not None and str(team_id) == str(home_team_id):
+                home += valor
+            elif away_team_id is not None and team_id is not None and str(team_id) == str(away_team_id):
+                away += valor
 
         if total <= 0:
             return 0.0, 0.0, 0.0
@@ -1234,13 +1244,6 @@ def avaliar_propensao_gol(
             pontos += 1
         if total_fin >= 8 or total_chutes >= 4:
             pontos += 1
-
-        # Se o fluxo recente está claramente caindo, os números acumulados
-        # não bastam para liberar um novo sinal de HT.
-        if intensidade == 'CAINDO' and recente < 25 and aceleracao < 0:
-            pontos -= 2
-            motivos.append('fluxo atual perdeu força')
-
         return {
             'aprovado': pontos >= 1,
             'pontos': pontos,
@@ -1918,14 +1921,13 @@ def normalizar_score_100(score, mercado):
 
 
 def classificar_intensidade(pressao, fin_tot, chutes_gol, grandes_chances):
-    """Classifica a intensidade atual sem confundir troca de lado com aceleração."""
+    """Classifica a intensidade atual do jogo."""
     aceleracao = pressao.get('aceleracao', 0)
     recente = pressao.get('recente', 0)
-    tendencia = pressao.get('tendencia')
 
-    if tendencia == 'CRESCENTE' or aceleracao >= 8:
+    if aceleracao >= 6:
         return 'CRESCENTE'
-    if tendencia == 'CAINDO' or aceleracao <= -8:
+    if aceleracao <= -6:
         return 'CAINDO'
     if recente >= 35 or fin_tot >= 10 or chutes_gol >= 4 or grandes_chances >= 2:
         return 'ALTA'
@@ -1955,117 +1957,396 @@ def classificar_qualidade(xg_tot, chutes_gol, grandes_chances):
 
 def calcular_confianca_independente(
     mercado,
+    minutagem,
+    gols_c,
+    gols_f,
     xg_tot,
+    xg_h,
+    xg_a,
     fin_tot,
+    fin_h,
+    fin_a,
     chutes_gol,
     grandes_chances,
     pressao,
     intensidade,
     qualidade,
+    contexto_competitivo=None,
     prelive_info=None,
 ):
-    """Confiança independente, calibrada pela convergência dos indicadores.
+    """Calcula a CONFIANÇA de forma independente do GOAL SCORE.
 
-    Não usa o GOAL SCORE. Penaliza intensidade caindo e cenários em que os
-    números parecem fortes, mas a produção de perigo real é insuficiente.
+    A confiança não é uma conversão do GOAL SCORE. Ela mede a convergência
+    dos dados para o mercado específico e considera, além da produção ofensiva:
+    - minuto e tempo restante;
+    - placar atual e gols necessários para vencer a linha;
+    - direção/força do fluxo recente;
+    - distribuição do xG entre as equipes;
+    - expulsões e pressão competitiva;
+    - qualidade das chances;
+    - tendência pré-live, apenas como confirmação secundária.
+
+    O objetivo é impedir que volume acumulado transforme automaticamente um
+    jogo em 9.5/10. A nota máxima é 9.5 e exige forte convergência contextual.
     """
+    contexto_competitivo = contexto_competitivo or {}
+    pressao = pressao or {}
+
+    try:
+        minuto = int(str(minutagem).split("'")[0])
+    except (ValueError, IndexError, TypeError):
+        minuto = 45 if mercado != 'LIMITE_FT' else 65
+
+    minuto = max(1, min(90, minuto))
+
+    try:
+        gols_c = int(gols_c or 0)
+        gols_f = int(gols_f or 0)
+    except (TypeError, ValueError):
+        gols_c, gols_f = 0, 0
+
+    try:
+        xg_tot = max(0.0, float(xg_tot or 0))
+        xg_h = max(0.0, float(xg_h or 0))
+        xg_a = max(0.0, float(xg_a or 0))
+    except (TypeError, ValueError):
+        xg_tot, xg_h, xg_a = 0.0, 0.0, 0.0
+
+    fin_tot = max(0, int(fin_tot or 0))
+    fin_h = max(0, int(fin_h or 0))
+    fin_a = max(0, int(fin_a or 0))
+    chutes_gol = max(0, int(chutes_gol or 0))
+    grandes_chances = max(0, int(grandes_chances or 0))
+
+    recente = max(0.0, float(pressao.get('recente', 0) or 0))
+    pico = max(0.0, float(pressao.get('pico', 0) or 0))
+    aceleracao = float(pressao.get('aceleracao', 0) or 0)
+
+    # ------------------------------------------------------------------
+    # 1) Base conservadora.
+    # ------------------------------------------------------------------
     pontos = 4.0
 
-    if xg_tot >= 1.20:
-        pontos += 1.5
-    elif xg_tot >= 0.90:
-        pontos += 1.2
-    elif xg_tot >= 0.60:
-        pontos += 0.8
-    elif xg_tot >= 0.40:
-        pontos += 0.4
+    # ------------------------------------------------------------------
+    # 2) Evidência ofensiva acumulada.
+    # Os incrementos são deliberadamente menores que na versão anterior.
+    # ------------------------------------------------------------------
+    if xg_tot >= 2.00:
+        pontos += 1.10
+    elif xg_tot >= 1.50:
+        pontos += 0.90
+    elif xg_tot >= 1.10:
+        pontos += 0.65
+    elif xg_tot >= 0.80:
+        pontos += 0.40
+    elif xg_tot >= 0.55:
+        pontos += 0.20
 
-    if chutes_gol >= 6:
-        pontos += 1.2
-    elif chutes_gol >= 4:
-        pontos += 0.9
+    if chutes_gol >= 7:
+        pontos += 0.85
+    elif chutes_gol >= 5:
+        pontos += 0.65
     elif chutes_gol >= 3:
-        pontos += 0.6
+        pontos += 0.45
     elif chutes_gol >= 2:
-        pontos += 0.3
+        pontos += 0.20
 
-    if grandes_chances >= 3:
-        pontos += 1.0
+    if grandes_chances >= 4:
+        pontos += 0.85
+    elif grandes_chances >= 3:
+        pontos += 0.70
     elif grandes_chances >= 2:
-        pontos += 0.8
+        pontos += 0.50
     elif grandes_chances >= 1:
-        pontos += 0.4
+        pontos += 0.25
 
-    if fin_tot >= 14:
-        pontos += 0.7
+    if fin_tot >= 18:
+        pontos += 0.45
+    elif fin_tot >= 14:
+        pontos += 0.35
     elif fin_tot >= 10:
-        pontos += 0.5
+        pontos += 0.20
     elif fin_tot >= 7:
-        pontos += 0.3
+        pontos += 0.10
 
-    recente = pressao.get('recente', 0)
-    pico = pressao.get('pico', 0)
-    aceleracao = pressao.get('aceleracao', 0)
-
-    if recente >= 45 or pico >= 60:
-        pontos += 0.8
+    # ------------------------------------------------------------------
+    # 3) Fluxo recente. O acumulado não pode compensar um jogo que esfriou.
+    # ------------------------------------------------------------------
+    if recente >= 50 or pico >= 65:
+        pontos += 0.70
+    elif recente >= 40 or pico >= 55:
+        pontos += 0.50
     elif recente >= 30 or pico >= 45:
-        pontos += 0.5
-    elif recente >= 20 or pico >= 30:
-        pontos += 0.3
+        pontos += 0.30
+    elif recente < 18:
+        pontos -= 0.25
 
-    if aceleracao >= 8:
-        pontos += 0.4
-    elif aceleracao >= 4:
-        pontos += 0.2
+    if aceleracao >= 10:
+        pontos += 0.45
+    elif aceleracao >= 6:
+        pontos += 0.25
+    elif aceleracao <= -10:
+        pontos -= 0.70
+    elif aceleracao <= -6:
+        pontos -= 0.45
+    elif aceleracao < -3:
+        pontos -= 0.20
 
+    # ------------------------------------------------------------------
+    # 4) Qualidade/intensidade.
+    # ------------------------------------------------------------------
     if qualidade == 'ALTA':
-        pontos += 0.4
+        pontos += 0.30
     elif qualidade == 'MÉDIA':
-        pontos += 0.2
+        pontos += 0.10
+    else:
+        pontos -= 0.15
 
     if intensidade == 'CRESCENTE':
-        pontos += 0.4
+        pontos += 0.35
     elif intensidade == 'ALTA':
-        pontos += 0.2
+        pontos += 0.15
+    elif intensidade == 'CAINDO':
+        pontos -= 0.45
 
-    # Convergência: perigo real precisa aparecer em mais de um indicador.
-    sinais = sum([
-        xg_tot >= (0.55 if mercado == '05_HT' else 0.90),
-        chutes_gol >= (3 if mercado == '05_HT' else 4),
-        grandes_chances >= 1,
-        fin_tot >= (8 if mercado == '05_HT' else 12),
-        recente >= 25 or aceleracao >= 6,
+    # ------------------------------------------------------------------
+    # 5) Tempo restante. Quanto menos tempo, maior a exigência.
+    # ------------------------------------------------------------------
+    if mercado in ('05_HT', '15_HT'):
+        tempo_restante = max(0, 45 - minuto)
+        if tempo_restante >= 25:
+            pontos += 0.55
+        elif tempo_restante >= 20:
+            pontos += 0.35
+        elif tempo_restante >= 16:
+            pontos += 0.15
+        elif tempo_restante >= 12:
+            pontos -= 0.15
+        else:
+            pontos -= 0.45
+    else:
+        tempo_restante = max(0, 90 - minuto)
+        if tempo_restante >= 22:
+            pontos += 0.45
+        elif tempo_restante >= 18:
+            pontos += 0.25
+        elif tempo_restante >= 15:
+            pontos += 0.05
+        elif tempo_restante >= 12:
+            pontos -= 0.20
+        else:
+            pontos -= 0.60
+
+    # ------------------------------------------------------------------
+    # 6) Placar + gols necessários.
+    # Para as linhas atuais do bot, sempre é necessário pelo menos 1 gol.
+    # A diferença de placar muda bastante a leitura desse gol.
+    # ------------------------------------------------------------------
+    diferenca = abs(gols_c - gols_f)
+    gols_necessarios = 1
+
+    if diferenca >= 2:
+        pontos -= 0.85
+    elif diferenca == 1:
+        if gols_c < gols_f:
+            lado_atras = 'home'
+        else:
+            lado_atras = 'away'
+
+        fin_atras = fin_h if lado_atras == 'home' else fin_a
+        fin_lado_outro = fin_a if lado_atras == 'home' else fin_h
+        xg_atras = xg_h if lado_atras == 'home' else xg_a
+        xg_outro = xg_a if lado_atras == 'home' else xg_h
+        gc_atras = 0
+        if isinstance(contexto_competitivo, dict):
+            # Os grandes números por equipe não são armazenados no contexto;
+            # a distribuição de xG e finalizações já fornece a confirmação.
+            pass
+
+        share_fin = fin_atras / fin_tot if fin_tot else 0.0
+        share_xg = xg_atras / xg_tot if xg_tot > 0 else 0.0
+
+        if share_fin >= 0.40 or share_xg >= 0.40:
+            pontos += 0.45
+        elif share_fin < 0.30 and share_xg < 0.25:
+            pontos -= 0.60
+
+        # Se o time que está atrás tem muito menos produção que o adversário,
+        # o gol seguinte fica mais dependente de uma ruptura ocasional.
+        if fin_atras + 2 < fin_lado_outro and share_xg < 0.30:
+            pontos -= 0.25
+        if xg_atras + 0.35 < xg_outro and share_xg < 0.30:
+            pontos -= 0.20
+    elif diferenca == 0:
+        pontos += 0.10
+
+    # ------------------------------------------------------------------
+    # 7) Distribuição do xG. Não basta o total ser alto: o cenário do jogo
+    # precisa indicar de onde pode vir o próximo gol.
+    # ------------------------------------------------------------------
+    if xg_tot > 0:
+        maior_xg = max(xg_h, xg_a)
+        menor_xg = min(xg_h, xg_a)
+        share_maior = maior_xg / xg_tot
+        share_menor = menor_xg / xg_tot
+
+        if mercado == '05_HT' and gols_c == 0 and gols_f == 0:
+            if share_menor >= 0.25:
+                pontos += 0.20
+            elif share_maior >= 0.85:
+                pontos -= 0.15
+
+        if mercado == '15_HT' and diferenca == 1:
+            if gols_c < gols_f:
+                share_atras = xg_h / xg_tot
+            else:
+                share_atras = xg_a / xg_tot
+            if share_atras >= 0.40:
+                pontos += 0.25
+            elif share_atras < 0.25:
+                pontos -= 0.25
+
+        if mercado == 'LIMITE_FT' and diferenca == 1:
+            if gols_c < gols_f:
+                share_atras = xg_h / xg_tot
+            else:
+                share_atras = xg_a / xg_tot
+            if share_atras >= 0.40:
+                pontos += 0.25
+            elif share_atras < 0.25:
+                pontos -= 0.30
+
+    # ------------------------------------------------------------------
+    # 8) Expulsões: usar o contexto já coletado pelo SofaScore.
+    # ------------------------------------------------------------------
+    vermelhos_casa = int(contexto_competitivo.get('vermelhos_casa', 0) or 0)
+    vermelhos_fora = int(contexto_competitivo.get('vermelhos_fora', 0) or 0)
+
+    if vermelhos_casa or vermelhos_fora:
+        if gols_c < gols_f:
+            lado_atras = 'home'
+        elif gols_f < gols_c:
+            lado_atras = 'away'
+        else:
+            lado_atras = None
+
+        if vermelhos_casa and vermelhos_fora:
+            pontos += 0.15
+        elif vermelhos_casa:
+            if lado_atras == 'home':
+                pontos -= 1.10
+            else:
+                pontos += 0.35
+        elif vermelhos_fora:
+            if lado_atras == 'away':
+                pontos -= 1.10
+            else:
+                pontos += 0.35
+
+    # ------------------------------------------------------------------
+    # 9) Pressão competitiva: só reforça a confiança quando está coerente
+    # com a situação do placar e a produção ao vivo.
+    # ------------------------------------------------------------------
+    press_comp = contexto_competitivo.get('pressao_competitiva') or {}
+    lado_comp = press_comp.get('lado')
+    score_comp_home = float(press_comp.get('score_home', 0) or 0)
+    score_comp_away = float(press_comp.get('score_away', 0) or 0)
+
+    if lado_comp == 'home':
+        if gols_c < gols_f and (fin_h >= fin_a or xg_h >= xg_a):
+            pontos += 0.45
+        elif gols_c == gols_f and (fin_h >= fin_a or xg_h >= xg_a):
+            pontos += 0.25
+    elif lado_comp == 'away':
+        if gols_f < gols_c and (fin_a >= fin_h or xg_a >= xg_h):
+            pontos += 0.45
+        elif gols_c == gols_f and (fin_a >= fin_h or xg_a >= xg_h):
+            pontos += 0.25
+
+    # Contexto competitivo muito equilibrado não deve virar bônus artificial.
+    if lado_comp and abs(score_comp_home - score_comp_away) < 1.0:
+        pontos -= 0.05
+
+    # ------------------------------------------------------------------
+    # 10) Pré-live: confirmação secundária e de baixo peso.
+    # ------------------------------------------------------------------
+    if prelive_info:
+        ajuste = float(prelive_info.get('ajuste', 0.0) or 0.0)
+        pontos += max(-0.25, min(0.25, ajuste))
+
+    # ------------------------------------------------------------------
+    # 11) Convergência. Uma nota excepcional exige vários sinais realmente
+    # independentes. O GOAL SCORE não entra aqui.
+    # ------------------------------------------------------------------
+    sinais_fortes = sum([
+        xg_tot >= (0.70 if mercado == '05_HT' else 1.30),
+        chutes_gol >= (3 if mercado == '05_HT' else 5),
+        grandes_chances >= (1 if mercado == '05_HT' else 2),
+        fin_tot >= (7 if mercado == '05_HT' else 12),
+        recente >= 30,
+        aceleracao >= 6,
+        qualidade == 'ALTA',
+        intensidade == 'CRESCENTE',
     ])
 
-    if sinais >= 4:
-        pontos += 0.3
-    elif sinais <= 1:
-        pontos -= 0.7
-    elif sinais == 2:
-        pontos -= 0.2
+    if sinais_fortes >= 6:
+        pontos += 0.30
+    elif sinais_fortes >= 5:
+        pontos += 0.15
+    elif sinais_fortes <= 2:
+        pontos -= 0.45
+    elif sinais_fortes == 3:
+        pontos -= 0.20
 
-    # Intensidade caindo é uma trava importante: números acumulados podem
-    # continuar altos mesmo quando o jogo perdeu força.
+    # ------------------------------------------------------------------
+    # 12) Travas finais. 9.5 passa a ser excepcional de verdade.
+    # ------------------------------------------------------------------
+    teto_confianca = 9.5
+
+    if sinais_fortes <= 3:
+        teto_confianca = 8.5
+    elif sinais_fortes == 4:
+        teto_confianca = 9.0
+    elif sinais_fortes == 5:
+        teto_confianca = 9.3
+
     if intensidade == 'CAINDO':
-        pontos -= 0.8
-        if aceleracao <= -10:
-            pontos -= 0.4
+        teto_confianca = min(teto_confianca, 8.8)
 
-    # xG zerado não destrói o sinal, mas também não pode contribuir como se
-    # fosse evidência positiva. Se a produção estiver baixa, reduz confiança.
-    if xg_tot <= 0.01 and chutes_gol <= 2 and grandes_chances == 0:
-        pontos -= 0.5
+    if mercado == 'LIMITE_FT' and minuto >= 72:
+        teto_confianca = min(teto_confianca, 9.2)
 
-    if mercado == '05_HT':
-        pontos += 0.1
-    elif mercado == 'LIMITE_FT':
-        pontos -= 0.1
+    if mercado == 'LIMITE_FT' and minuto >= 75:
+        teto_confianca = min(teto_confianca, 8.8)
 
-    if prelive_info:
-        pontos += float(prelive_info.get('ajuste', 0.0))
+    if mercado in ('05_HT', '15_HT') and minuto >= 27:
+        teto_confianca = min(teto_confianca, 9.0)
 
-    return max(0.0, min(9.5, round(pontos, 1)))
+    # Expulsão do time que está atrás é um risco estrutural importante.
+    if diferenca == 1:
+        if (gols_c < gols_f and vermelhos_casa) or (gols_f < gols_c and vermelhos_fora):
+            teto_confianca = min(teto_confianca, 7.8)
+
+    # xG baixo + produção baixa não pode virar confiança alta por pressão isolada.
+    if xg_tot < 0.70 and chutes_gol < 3 and grandes_chances < 2:
+        teto_confianca = min(teto_confianca, 7.8)
+
+    # Cenário em que o time atrás produz muito pouco: limite conservador.
+    if diferenca == 1:
+        if gols_c < gols_f:
+            xg_atras = xg_h
+            fin_atras = fin_h
+        else:
+            xg_atras = xg_a
+            fin_atras = fin_a
+        if xg_tot > 0 and (xg_atras / xg_tot) < 0.25 and fin_tot > 0 and (fin_atras / fin_tot) < 0.30:
+            teto_confianca = min(teto_confianca, 7.8)
+
+    # 9.5 só pode aparecer com convergência muito forte e sem travas negativas.
+    if sinais_fortes < 6:
+        teto_confianca = min(teto_confianca, 9.3)
+
+    return max(0.0, min(teto_confianca, round(pontos, 1)))
 
 
 def montar_motivos_exibicao(
@@ -2165,13 +2446,21 @@ def montar_layout_alerta(
     )
     confianca = calcular_confianca_independente(
         mercado,
+        minutagem,
+        gols_c,
+        gols_f,
         xg_tot,
+        xg_h,
+        xg_a,
         fin_tot,
+        fin_h,
+        fin_a,
         chutes_gol,
         grandes_chances,
         pressao,
         intensidade,
         qualidade,
+        contexto_competitivo,
         prelive_info,
     )
 
@@ -2877,7 +3166,11 @@ def checar_jogos_ao_vivo():
             # pelo xG individual das finalizações no shotmap do SofaScore.
             # Só usa a estimativa estatística como último recurso.
             if xg_tot <= 0.01:
-                xg_tot, xg_h, xg_a = obter_xg_por_shotmap_sofascore(event_id)
+                xg_tot, xg_h, xg_a = obter_xg_por_shotmap_sofascore(
+                    event_id,
+                    item.get('homeTeam', {}).get('id'),
+                    item.get('awayTeam', {}).get('id')
+                )
 
             if xg_tot <= 0.01:
                 xg_tot, xg_h, xg_a = calcular_xg_estimado_por_estatisticas(
@@ -2971,29 +3264,6 @@ def checar_jogos_ao_vivo():
                         contexto_competitivo
                     )
 
-                    # Qualidade > quantidade: no +0,5 HT, números acumulados
-                    # não bastam se o fluxo atual estiver perdendo força.
-                    intensidade_05 = classificar_intensidade(
-                        pressao, fin_tot, chutes_gol, grandes_chances
-                    )
-                    sinais_atuais_05 = sum([
-                        xg_tot >= 0.60,
-                        chutes_gol >= 2,
-                        grandes_chances >= 1,
-                        fin_tot >= 7,
-                    ])
-                    pressao_atual_05 = (
-                        pressao.get('recente', 0) >= 20
-                        or pressao.get('aceleracao', 0) >= 4
-                    )
-
-                    aprovado = (
-                        aprovado
-                        and sinais_atuais_05 >= 2
-                        and pressao_atual_05
-                        and intensidade_05 != 'CAINDO'
-                    )
-
                     if aprovado and contexto_gol['aprovado']:
                         notificados_05_ht.add(event_id)
 
@@ -3085,9 +3355,9 @@ def checar_jogos_ao_vivo():
                         contexto_competitivo
                     )
 
-                    # O +1,5 HT não pode ser sustentado apenas por números
-                    # acumulados. Depois de 25', exigimos perigo atual e não aceitamos
-                    # jogo claramente perdendo força.
+                    # Após 25', com um único gol, o +1,5 HT precisa mostrar
+                    # produção realmente consistente; preservamos a lógica base
+                    # do mercado e apenas eliminamos os sinais tardios mais fracos.
                     if minuto_num >= 25:
                         sinais_tardios_15 = sum([
                             xg_tot >= 0.85,
@@ -3095,19 +3365,7 @@ def checar_jogos_ao_vivo():
                             grandes_chances >= 2,
                             fin_tot >= 8 and escanteios >= 3,
                         ])
-                        pressao_atual_15 = (
-                            pressao.get('recente', 0) >= 25
-                            or pressao.get('aceleracao', 0) >= 4
-                        )
-                        aprovado = (
-                            aprovado
-                            and score >= 13
-                            and sinais_tardios_15 >= 1
-                            and pressao_atual_15
-                            and classificar_intensidade(
-                                pressao, fin_tot, chutes_gol, grandes_chances
-                            ) != 'CAINDO'
-                        )
+                        aprovado = aprovado and score >= 13 and sinais_tardios_15 >= 1
 
                     if aprovado and contexto_gol['aprovado']:
                         notificados_15_ht.add(event_id)
@@ -3220,33 +3478,11 @@ def checar_jogos_ao_vivo():
                         or contexto_gol.get('caca_gol', False)
                     )
 
-                    intensidade_ft = classificar_intensidade(
-                        pressao, fin_tot, chutes_gol, grandes_chances
-                    )
-                    pressao_atual_ft = (
-                        pressao.get('recente', 0) >= 30
-                        or pressao.get('aceleracao', 0) >= 6
-                        or chutes_gol >= 5
-                        or grandes_chances >= 2
-                    )
-
-                    # A partir de 68', o Limite FT precisa ter perigo atual.
-                    # Isso evita liberar uma entrada apenas porque o acumulado
-                    # do jogo parece forte.
-                    filtro_fluxo_ft = (
-                        minuto_num < 68
-                        or (
-                            pressao_atual_ft
-                            and intensidade_ft != 'CAINDO'
-                        )
-                    )
-
                     if (
                         aprovado
                         and score >= exigencia_ft['score_minimo']
                         and passa_contexto_ft
                         and passa_caca_gol_ft
-                        and filtro_fluxo_ft
                     ):
                         notificados_limite_ft.add(event_id)
 

@@ -13,7 +13,7 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAF4HkxYj79Gq7HxN7XZz-s9LdOO4LB8fr8'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
 CHAT_ID = '-1004321907969'
 
 TERMOS_IGNORADOS = [
@@ -161,6 +161,10 @@ notificados_limite_ft = set()
 
 # Dicionário de acompanhamento dos alertas enviados para validação do resultado
 alertas_pendentes = {}
+
+# Confirmação do placar final antes da liquidação. Evita encerrar um alerta
+# durante uma janela transitória de VAR/atualização de placar.
+confirmacoes_encerramento = {}
 
 # Histórico dos resultados confirmados no dia, usado no relatório diário.
 historico_diario = []
@@ -2407,6 +2411,17 @@ def montar_motivos_exibicao(
     return motivos[:5] if motivos else ['sinais ofensivos suficientes para o filtro']
 
 
+def stake_por_confianca(confianca):
+    """Define a unidade sugerida sem alterar o cálculo da confiança."""
+    confianca = float(confianca or 0)
+
+    if confianca >= 8.5:
+        return '1,0u', '🔥'
+    if confianca >= 7.5:
+        return '0,75u', '🟢'
+    return '0,5u', '🟡'
+
+
 def montar_layout_alerta(
     mercado,
     liga,
@@ -2463,6 +2478,8 @@ def montar_layout_alerta(
         contexto_competitivo,
         prelive_info,
     )
+
+    stake, stake_emoji = stake_por_confianca(confianca)
 
     motivos = montar_motivos_exibicao(
         xg_tot,
@@ -2537,7 +2554,8 @@ def montar_layout_alerta(
         f'{bloco_contexto}\n'
         f'🐶 *FARO:*\n'
         f'{faro}\n\n'
-        f'Confiança: {confianca:.1f}/10'
+        f'Confiança: {confianca:.1f}/10\n'
+        f'{stake_emoji} *STAKE SUGERIDA: {stake}*'
     )
 
     return mensagem
@@ -2695,20 +2713,28 @@ def validar_alertas_enviados(jogos_dict):
     +0,5 HT / +1,5 HT: resultado somente no fim do 1º tempo.
     Limite FT: resultado somente no fim do jogo.
 
-    Se o placar subir após o alerta e depois voltar, tratamos isso como
-    correção de placar/gol anulado. O alerta NÃO é anulado: o mercado e o
-    placar-base são recalculados para refletir o placar corrigido.
+    Correções de VAR/placar não anulam o alerta. Quando o placar volta para
+    o patamar existente no alerta, o mercado é recalculado a partir do placar
+    corrigido. Quando ainda existe algum gol válido acima do placar do alerta,
+    não rebaixamos o mercado artificialmente.
 
-    Ex.: alerta +1,5 HT em 1x0 -> gol faz 2x0 -> VAR anula -> volta a 1x0:
-    o alerta permanece +1,5 HT. Se o alerta tiver sido emitido logo após
-    1x0 e o gol original for anulado, voltando para 0x0, ele passa a +0,5 HT.
+    Para Limite FT, a liquidação usa o placar regulamentar (normaltime) quando
+    disponível, ignorando a disputa de pênaltis. Além disso, o placar final
+    precisa ser observado de forma consistente em dois ciclos antes de Green/
+    Red, evitando uma liquidação em uma janela transitória de VAR.
     """
     chaves_para_remover = []
+
+    def score_int(valor):
+        try:
+            return int(valor)
+        except (TypeError, ValueError):
+            return None
 
     for chave_alerta, info in list(alertas_pendentes.items()):
         event_id = info['event_id']
         message_id = info['message_id']
-        gols_no_alerta = info['gols_alerta']
+        gols_no_alerta = int(info.get('gols_alerta', 0) or 0)
         mercado = info['mercado']
         msg_original = info['mensagem_original']
 
@@ -2716,9 +2742,16 @@ def validar_alertas_enviados(jogos_dict):
         if not item_jogo:
             continue
 
-        gols_c = item_jogo.get('homeScore', {}).get('current', 0)
-        gols_f = item_jogo.get('awayScore', {}).get('current', 0)
-        gols_atuais = gols_c + gols_f
+        home_score = item_jogo.get('homeScore', {}) or {}
+        away_score = item_jogo.get('awayScore', {}) or {}
+
+        gols_c_atual = score_int(home_score.get('current'))
+        gols_f_atual = score_int(away_score.get('current'))
+        if gols_c_atual is None:
+            gols_c_atual = 0
+        if gols_f_atual is None:
+            gols_f_atual = 0
+        gols_atuais = gols_c_atual + gols_f_atual
 
         # Guarda o maior placar observado enquanto o alerta esteve aberto.
         maior_total = max(
@@ -2727,12 +2760,19 @@ def validar_alertas_enviados(jogos_dict):
         )
         info['maior_total_observado'] = maior_total
 
-        status_desc = str(
-            item_jogo.get('status', {}).get('description', '')
-        ).lower()
-        time_status = str(
-            item_jogo.get('status', {}).get('type', '')
-        ).lower()
+        status = item_jogo.get('status', {}) or {}
+        status_desc = str(status.get('description', '')).lower().strip()
+        time_status = str(status.get('type', '')).lower().strip()
+        status_code = str(status.get('code', '')).lower().strip()
+
+        texto_status = f'{status_desc} {time_status} {status_code}'
+        eh_disputa_penaltis = any(
+            termo in texto_status
+            for termo in (
+                'penalty shootout', 'penalties', 'penalty',
+                'pênaltis', 'penaltis', 'shootout'
+            )
+        )
 
         eh_intervalo = (
             'halftime' in status_desc
@@ -2743,17 +2783,20 @@ def validar_alertas_enviados(jogos_dict):
         eh_finalizado = (
             time_status == 'finished'
             or 'ended' in status_desc
-            or 'ft' in status_desc
-            or 'extra' in status_desc
+            or status_desc == 'ft'
+            or 'full time' in status_desc
+            or 'after penalties' in status_desc
+            or 'after penalty' in status_desc
+            or eh_disputa_penaltis
         )
 
         # --------------------------------------------------------------
         # CORREÇÃO DE PLACAR / GOL ANULADO
         # --------------------------------------------------------------
-        # Se o SofaScore registrou temporariamente um gol e depois voltou
-        # para o placar anterior, não anulamos o alerta. Rebaixamos o
-        # mercado para o que realmente passou a ser necessário.
-        if gols_atuais < maior_total and gols_atuais >= 0:
+        # Só rebaixamos o mercado quando o placar corrigido volta para o
+        # patamar do alerta ou abaixo dele. Se ainda existe um gol válido
+        # acima do placar-base original, preservamos esse gol.
+        if gols_atuais < maior_total and gols_atuais <= gols_no_alerta and gols_atuais >= 0:
             novo_mercado = mercado
 
             if mercado == '15_HT' and gols_atuais == 0:
@@ -2773,7 +2816,7 @@ def validar_alertas_enviados(jogos_dict):
                         'OVER 0,5 HT', 'OVER 1,5 HT'
                     )
                 else:
-                    nova_linha = calcular_linha_limite_ft(gols_c, gols_f)
+                    nova_linha = calcular_linha_limite_ft(gols_c_atual, gols_f_atual)
                     import re
                     msg_corrigida = re.sub(
                         r'🎯 SINAL LIMITE FT \(\+[0-9]+\.[05]\)',
@@ -2789,12 +2832,11 @@ def validar_alertas_enviados(jogos_dict):
                 import re
                 msg_corrigida = re.sub(
                     r'⏱️ .*? — [0-9]+x[0-9]+',
-                    f'⏱️ {item_jogo.get("status", {}).get("description", "")} — {gols_c}x{gols_f}',
+                    f'⏱️ {status.get("description", "")} — {gols_c_atual}x{gols_f_atual}',
                     msg_corrigida,
                     count=1
                 )
 
-                # Mantém o alerta aberto com o novo placar-base.
                 info['mercado'] = novo_mercado
                 info['gols_alerta'] = gols_atuais
                 info['maior_total_observado'] = gols_atuais
@@ -2804,8 +2846,7 @@ def validar_alertas_enviados(jogos_dict):
                 msg_original = msg_corrigida
                 editar_alerta(message_id, msg_corrigida)
 
-                # O alerta corrigido continua pendente; não entra no relatório
-                # como Green/Red até o encerramento correto do mercado.
+                confirmacoes_encerramento.pop(chave_alerta, None)
                 continue
 
         # --------------------------------------------------------------
@@ -2815,19 +2856,52 @@ def validar_alertas_enviados(jogos_dict):
             if not (eh_intervalo or eh_finalizado):
                 continue
 
-            # O mercado precisa de pelo menos um gol adicional em relação
-            # ao placar que existia quando o alerta foi emitido.
-            green = gols_atuais > gols_no_alerta
+            # HT usa o placar corrente do encerramento do 1º tempo.
+            gols_validos = gols_atuais
 
         elif mercado == 'LIMITE_FT':
             if not eh_finalizado:
                 continue
 
-            # Limite FT = exatamente o total de gols do alerta + 0,5.
-            green = gols_atuais > gols_no_alerta
+            # Nunca usamos o placar da disputa de pênaltis para o mercado FT.
+            # O SofaScore normalmente fornece o placar regulamentar em
+            # normaltime. Se estiver em disputa de pênaltis e esse dado não
+            # estiver disponível, aguardamos em vez de arriscar um Green falso.
+            normaltime_c = score_int(home_score.get('normaltime'))
+            normaltime_f = score_int(away_score.get('normaltime'))
+
+            if normaltime_c is not None and normaltime_f is not None:
+                gols_validos = normaltime_c + normaltime_f
+            elif eh_disputa_penaltis:
+                continue
+            else:
+                gols_validos = gols_atuais
+
+            # Confirma o mesmo placar regulamentar em dois ciclos consecutivos.
+            # Isso protege contra a sequência: gol -> Green prematuro -> VAR ->
+            # placar corrigido, além de absorver a atualização tardia do evento.
+            assinatura_final = (
+                normaltime_c if normaltime_c is not None else gols_c_atual,
+                normaltime_f if normaltime_f is not None else gols_f_atual,
+                eh_disputa_penaltis,
+            )
+            anterior = confirmacoes_encerramento.get(chave_alerta)
+
+            if anterior and anterior.get('assinatura') == assinatura_final:
+                anterior['confirmacoes'] = int(anterior.get('confirmacoes', 1)) + 1
+            else:
+                confirmacoes_encerramento[chave_alerta] = {
+                    'assinatura': assinatura_final,
+                    'confirmacoes': 1,
+                }
+
+            if confirmacoes_encerramento[chave_alerta]['confirmacoes'] < 2:
+                continue
 
         else:
             continue
+
+        green = gols_validos > gols_no_alerta
 
         resultado = 'GREEN' if green else 'RED'
         emoji = '✅️✅️✅️' if green else '❌️❌️❌️'
@@ -2843,10 +2917,10 @@ def validar_alertas_enviados(jogos_dict):
             atualizar_relatorio_pos_02h(info, resultado)
 
         chaves_para_remover.append(chave_alerta)
+        confirmacoes_encerramento.pop(chave_alerta, None)
 
     for ch in chaves_para_remover:
         alertas_pendentes.pop(ch, None)
-
 
 def obter_evento_sofascore(event_id):
     """Busca um evento individual para validar alertas que atravessaram 02h."""

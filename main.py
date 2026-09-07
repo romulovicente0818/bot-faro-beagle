@@ -13,7 +13,7 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAF4HkxYj79Gq7HxN7XZz-s9LdOO4LB8fr8'
+TELEGRAM_TOKEN = '8826311067:AAG8PnZB8CgnZbUKqHgqq-CLEEF7mK-_QaA'
 CHAT_ID = '-1004321907969'
 
 TERMOS_IGNORADOS = [
@@ -1980,15 +1980,17 @@ def calcular_confianca_independente(
 ):
     """Calcula a CONFIANÇA de forma independente do GOAL SCORE.
 
-    V10 — calibração após a amostra de 104 alertas.
+    V11 — calibração após 81 alertas observados na V10.
 
-    A confiança mede a probabilidade do mercado específico ser atingido
-    dentro do tempo restante. Volume acumulado continua importante, mas
-    deixa de compensar sozinho:
-      - pouco tempo restante;
-      - quantidade de gols ainda necessária;
-      - queda do fluxo;
-      - produção fraca do lado que precisa reagir.
+    A principal correção é separar "produção acumulada" de "probabilidade
+    prática de ainda sair o(s) gol(s) necessários". O cálculo passa a dar
+    mais peso a:
+      - tempo restante por mercado;
+      - número de gols ainda necessários;
+      - concentração do perigo em apenas uma equipe;
+      - perigo bilateral e qualidade real das chances;
+      - queda de intensidade em jogos tardios;
+      - excepcionalidade necessária para 9.5.
 
     O GOAL SCORE continua independente da confiança.
     """
@@ -1999,7 +2001,6 @@ def calcular_confianca_independente(
         minuto = int(str(minutagem).split("'")[0])
     except (ValueError, IndexError, TypeError):
         minuto = 45 if mercado != 'LIMITE_FT' else 65
-
     minuto = max(1, min(90, minuto))
 
     try:
@@ -2026,257 +2027,251 @@ def calcular_confianca_independente(
     aceleracao = float(pressao.get('aceleracao', 0) or 0)
 
     # ------------------------------------------------------------------
-    # 1) Base.
+    # 1) Base + evidência ofensiva acumulada.
     # ------------------------------------------------------------------
-    pontos = 4.0
+    pontos = 3.8
 
-    # ------------------------------------------------------------------
-    # 2) Evidência ofensiva acumulada.
-    # ------------------------------------------------------------------
-    if xg_tot >= 2.00:
-        pontos += 1.10
+    if xg_tot >= 2.50:
+        pontos += 1.20
+    elif xg_tot >= 2.00:
+        pontos += 1.05
     elif xg_tot >= 1.50:
-        pontos += 0.90
+        pontos += 0.85
     elif xg_tot >= 1.10:
-        pontos += 0.65
+        pontos += 0.60
     elif xg_tot >= 0.80:
-        pontos += 0.40
-    elif xg_tot >= 0.55:
-        pontos += 0.20
-
-    if chutes_gol >= 7:
-        pontos += 0.85
-    elif chutes_gol >= 5:
-        pontos += 0.65
-    elif chutes_gol >= 3:
-        pontos += 0.45
-    elif chutes_gol >= 2:
-        pontos += 0.20
-
-    if grandes_chances >= 4:
-        pontos += 0.85
-    elif grandes_chances >= 3:
-        pontos += 0.70
-    elif grandes_chances >= 2:
-        pontos += 0.50
-    elif grandes_chances >= 1:
-        pontos += 0.25
-
-    if fin_tot >= 18:
-        pontos += 0.45
-    elif fin_tot >= 14:
         pontos += 0.35
-    elif fin_tot >= 10:
+    elif xg_tot >= 0.55:
+        pontos += 0.15
+
+    if chutes_gol >= 8:
+        pontos += 0.90
+    elif chutes_gol >= 6:
+        pontos += 0.75
+    elif chutes_gol >= 5:
+        pontos += 0.60
+    elif chutes_gol >= 3:
+        pontos += 0.40
+    elif chutes_gol >= 2:
+        pontos += 0.15
+
+    if grandes_chances >= 5:
+        pontos += 0.95
+    elif grandes_chances >= 4:
+        pontos += 0.80
+    elif grandes_chances >= 3:
+        pontos += 0.65
+    elif grandes_chances >= 2:
+        pontos += 0.45
+    elif grandes_chances >= 1:
         pontos += 0.20
-    elif fin_tot >= 7:
+
+    if fin_tot >= 20:
+        pontos += 0.45
+    elif fin_tot >= 16:
+        pontos += 0.35
+    elif fin_tot >= 12:
+        pontos += 0.25
+    elif fin_tot >= 8:
         pontos += 0.10
 
     # ------------------------------------------------------------------
-    # 3) Fluxo recente.
+    # 2) Fluxo recente e aceleração.
     # ------------------------------------------------------------------
     if recente >= 50 or pico >= 65:
-        pontos += 0.70
+        pontos += 0.65
     elif recente >= 40 or pico >= 55:
-        pontos += 0.50
+        pontos += 0.45
     elif recente >= 30 or pico >= 45:
-        pontos += 0.30
+        pontos += 0.25
     elif recente < 18:
+        pontos -= 0.30
+
+    if aceleracao >= 12:
+        pontos += 0.50
+    elif aceleracao >= 7:
+        pontos += 0.30
+    elif aceleracao >= 3:
+        pontos += 0.10
+    elif aceleracao <= -10:
+        pontos -= 0.75
+    elif aceleracao <= -6:
+        pontos -= 0.50
+    elif aceleracao < -3:
         pontos -= 0.25
 
-    if aceleracao >= 10:
-        pontos += 0.45
-    elif aceleracao >= 6:
-        pontos += 0.25
-    elif aceleracao <= -10:
-        pontos -= 0.70
-    elif aceleracao <= -6:
-        pontos -= 0.45
-    elif aceleracao < -3:
-        pontos -= 0.20
-
-    # ------------------------------------------------------------------
-    # 4) Qualidade/intensidade.
-    # ------------------------------------------------------------------
     if qualidade == 'ALTA':
-        pontos += 0.30
+        pontos += 0.25
     elif qualidade == 'MÉDIA':
-        pontos += 0.10
+        pontos += 0.05
     else:
         pontos -= 0.15
 
     if intensidade == 'CRESCENTE':
         pontos += 0.35
     elif intensidade == 'ALTA':
-        pontos += 0.15
+        pontos += 0.10
     elif intensidade == 'CAINDO':
-        pontos -= 0.45
+        pontos -= 0.50
 
     # ------------------------------------------------------------------
-    # 5) TEMPO RESTANTE — V10.
-    #
-    # Agora o relógio pesa mais porque a amostra mostrou que um jogo pode
-    # ter ótimos números acumulados e ainda assim não ter tempo suficiente
-    # para a linha específica.
+    # 3) Tempo restante + gols necessários.
     # ------------------------------------------------------------------
     if mercado in ('05_HT', '15_HT'):
         tempo_restante = max(0, 45 - minuto)
-
-        if tempo_restante >= 25:
-            pontos += 0.45
-        elif tempo_restante >= 20:
-            pontos += 0.20
-        elif tempo_restante >= 16:
-            pontos -= 0.10
-        elif tempo_restante >= 12:
-            pontos -= 0.45
-        elif tempo_restante >= 8:
-            pontos -= 0.75
-        else:
-            pontos -= 1.10
     else:
         tempo_restante = max(0, 90 - minuto)
 
-        if tempo_restante >= 22:
-            pontos += 0.30
-        elif tempo_restante >= 18:
-            pontos += 0.10
-        elif tempo_restante >= 15:
-            pontos -= 0.10
-        elif tempo_restante >= 12:
-            pontos -= 0.40
-        elif tempo_restante >= 10:
-            pontos -= 0.75
-        else:
-            pontos -= 1.10
-
-    # ------------------------------------------------------------------
-    # 6) PLACAR + GOLS NECESSÁRIOS — V10.
-    #
-    # Não usamos apenas a diferença do placar. A confiança deve responder:
-    # "quantos gols faltam para esta linha e quanto tempo existe para fazê-los?"
-    # ------------------------------------------------------------------
     total_gols = gols_c + gols_f
-
     if mercado == '05_HT':
         gols_necessarios = max(0, 1 - total_gols)
     elif mercado == '15_HT':
         gols_necessarios = max(0, 2 - total_gols)
     else:
-        # Limite FT = total atual + 0,5 -> sempre exige pelo menos 1 gol.
         gols_necessarios = 1
 
-    diferenca = abs(gols_c - gols_f)
+    # Relógio: mais severo na segunda metade do período de entrada.
+    if mercado in ('05_HT', '15_HT'):
+        if tempo_restante >= 25:
+            pontos += 0.40
+        elif tempo_restante >= 20:
+            pontos += 0.15
+        elif tempo_restante >= 16:
+            pontos -= 0.15
+        elif tempo_restante >= 12:
+            pontos -= 0.50
+        elif tempo_restante >= 8:
+            pontos -= 0.85
+        else:
+            pontos -= 1.20
+    else:
+        if tempo_restante >= 25:
+            pontos += 0.25
+        elif tempo_restante >= 22:
+            pontos += 0.10
+        elif tempo_restante >= 18:
+            pontos -= 0.05
+        elif tempo_restante >= 15:
+            pontos -= 0.20
+        elif tempo_restante >= 12:
+            pontos -= 0.50
+        elif tempo_restante >= 10:
+            pontos -= 0.85
+        else:
+            pontos -= 1.20
 
-    # Pressão temporal específica para a quantidade de gols ainda necessária.
+    # Cada gol adicional exigido recebe uma penalização própria.
     if gols_necessarios >= 2:
         if mercado in ('05_HT', '15_HT'):
             if tempo_restante >= 25:
-                pontos -= 0.20
+                pontos -= 0.35
             elif tempo_restante >= 20:
-                pontos -= 0.55
+                pontos -= 0.75
             elif tempo_restante >= 16:
-                pontos -= 0.90
+                pontos -= 1.05
             elif tempo_restante >= 12:
-                pontos -= 1.20
+                pontos -= 1.40
             else:
-                pontos -= 1.60
+                pontos -= 1.80
         else:
-            # Não ocorre nos filtros atuais, mas mantém a função segura.
-            if tempo_restante >= 25:
-                pontos -= 0.30
-            elif tempo_restante >= 18:
-                pontos -= 0.70
-            elif tempo_restante >= 12:
-                pontos -= 1.10
-            else:
-                pontos -= 1.50
+            pontos -= 0.45 if tempo_restante >= 25 else 0.85
     elif gols_necessarios == 1:
-        # Para um único gol, a exigência cresce conforme o tempo diminui.
         if mercado == 'LIMITE_FT':
-            if tempo_restante >= 22:
-                pontos += 0.15
-            elif tempo_restante >= 18:
-                pontos += 0.05
-            elif tempo_restante >= 15:
-                pontos -= 0.15
-            elif tempo_restante >= 12:
-                pontos -= 0.40
-            elif tempo_restante >= 10:
-                pontos -= 0.70
-            else:
-                pontos -= 1.00
-        else:
             if tempo_restante >= 25:
                 pontos += 0.10
-            elif tempo_restante >= 20:
-                pontos -= 0.05
-            elif tempo_restante >= 16:
+            elif tempo_restante >= 22:
+                pontos += 0.03
+            elif tempo_restante >= 18:
+                pontos -= 0.08
+            elif tempo_restante >= 15:
                 pontos -= 0.20
             elif tempo_restante >= 12:
                 pontos -= 0.45
-            else:
+            elif tempo_restante >= 10:
                 pontos -= 0.75
-
-    # Diferença do placar.
-    if diferenca >= 2:
-        pontos -= 0.85
-    elif diferenca == 1:
-        if gols_c < gols_f:
-            lado_atras = 'home'
+            else:
+                pontos -= 1.05
         else:
-            lado_atras = 'away'
+            if tempo_restante >= 25:
+                pontos += 0.05
+            elif tempo_restante >= 20:
+                pontos -= 0.05
+            elif tempo_restante >= 16:
+                pontos -= 0.25
+            elif tempo_restante >= 12:
+                pontos -= 0.50
+            else:
+                pontos -= 0.80
 
+    # ------------------------------------------------------------------
+    # 4) Estrutura do placar e equipe que precisa reagir.
+    # ------------------------------------------------------------------
+    diferenca = abs(gols_c - gols_f)
+    if diferenca >= 2:
+        pontos -= 0.90
+    elif diferenca == 1:
+        lado_atras = 'home' if gols_c < gols_f else 'away'
         fin_atras = fin_h if lado_atras == 'home' else fin_a
-        fin_lado_outro = fin_a if lado_atras == 'home' else fin_h
+        fin_outro = fin_a if lado_atras == 'home' else fin_h
         xg_atras = xg_h if lado_atras == 'home' else xg_a
         xg_outro = xg_a if lado_atras == 'home' else xg_h
-
         share_fin = fin_atras / fin_tot if fin_tot else 0.0
         share_xg = xg_atras / xg_tot if xg_tot > 0 else 0.0
 
         if share_fin >= 0.40 or share_xg >= 0.40:
-            pontos += 0.45
+            pontos += 0.40
         elif share_fin < 0.30 and share_xg < 0.25:
-            pontos -= 0.60
+            pontos -= 0.70
 
-        if fin_atras + 2 < fin_lado_outro and share_xg < 0.30:
+        if fin_atras + 2 < fin_outro and share_xg < 0.30:
             pontos -= 0.25
         if xg_atras + 0.35 < xg_outro and share_xg < 0.30:
-            pontos -= 0.20
+            pontos -= 0.25
     else:
-        pontos += 0.10
+        pontos += 0.05
 
     # ------------------------------------------------------------------
-    # 7) Distribuição do xG.
+    # 5) DISTRIBUIÇÃO DO PERIGO — V11.
+    # Um xG alto extremamente concentrado não vale o mesmo que perigo
+    # distribuído, sobretudo em 0x0 tardio.
     # ------------------------------------------------------------------
     if xg_tot > 0:
-        maior_xg = max(xg_h, xg_a)
-        menor_xg = min(xg_h, xg_a)
-        share_maior = maior_xg / xg_tot
-        share_menor = menor_xg / xg_tot
+        share_h = xg_h / xg_tot
+        share_a = xg_a / xg_tot
+        share_menor_xg = min(share_h, share_a)
 
-        if mercado == '05_HT' and gols_c == 0 and gols_f == 0:
-            if share_menor >= 0.25:
-                pontos += 0.20
-            elif share_maior >= 0.85:
+        if share_menor_xg >= 0.35:
+            pontos += 0.30
+        elif share_menor_xg >= 0.25:
+            pontos += 0.10
+        elif share_menor_xg < 0.15:
+            pontos -= 0.25
+        elif share_menor_xg < 0.20:
+            pontos -= 0.15
+
+        # Domínio unilateral tardio: exige mais prova de conversão.
+        if mercado == 'LIMITE_FT' and minuto >= 65 and total_gols == 0:
+            share_maior = max(share_h, share_a)
+            if share_maior >= 0.90:
+                pontos -= 0.35
+            elif share_maior >= 0.80:
+                pontos -= 0.20
+
+        if mercado == 'LIMITE_FT' and minuto >= 70 and total_gols == 1:
+            share_maior = max(share_h, share_a)
+            if share_maior >= 0.85:
                 pontos -= 0.15
 
-        if mercado == '15_HT' and diferenca == 1:
-            share_atras = (xg_h if gols_c < gols_f else xg_a) / xg_tot
-            if share_atras >= 0.40:
-                pontos += 0.25
-            elif share_atras < 0.25:
-                pontos -= 0.25
-
-        if mercado == 'LIMITE_FT' and diferenca == 1:
-            share_atras = (xg_h if gols_c < gols_f else xg_a) / xg_tot
-            if share_atras >= 0.40:
-                pontos += 0.25
-            elif share_atras < 0.25:
-                pontos -= 0.30
+    # Volume bilateral de finalizações também importa.
+    if fin_tot > 0:
+        share_fin_menor = min(fin_h, fin_a) / fin_tot
+        if share_fin_menor >= 0.35:
+            pontos += 0.20
+        elif share_fin_menor < 0.20:
+            pontos -= 0.15
 
     # ------------------------------------------------------------------
-    # 8) Expulsões.
+    # 6) Expulsões.
     # ------------------------------------------------------------------
     vermelhos_casa = int(contexto_competitivo.get('vermelhos_casa', 0) or 0)
     vermelhos_fora = int(contexto_competitivo.get('vermelhos_fora', 0) or 0)
@@ -2290,20 +2285,14 @@ def calcular_confianca_independente(
             lado_atras = None
 
         if vermelhos_casa and vermelhos_fora:
-            pontos += 0.15
+            pontos += 0.10
         elif vermelhos_casa:
-            if lado_atras == 'home':
-                pontos -= 1.10
-            else:
-                pontos += 0.35
+            pontos -= 1.15 if lado_atras == 'home' else -0.30
         elif vermelhos_fora:
-            if lado_atras == 'away':
-                pontos -= 1.10
-            else:
-                pontos += 0.35
+            pontos -= 1.15 if lado_atras == 'away' else -0.30
 
     # ------------------------------------------------------------------
-    # 9) Pressão competitiva.
+    # 7) Pressão competitiva.
     # ------------------------------------------------------------------
     press_comp = contexto_competitivo.get('pressao_competitiva') or {}
     lado_comp = press_comp.get('lado')
@@ -2312,27 +2301,27 @@ def calcular_confianca_independente(
 
     if lado_comp == 'home':
         if gols_c < gols_f and (fin_h >= fin_a or xg_h >= xg_a):
-            pontos += 0.45
+            pontos += 0.40
         elif gols_c == gols_f and (fin_h >= fin_a or xg_h >= xg_a):
-            pontos += 0.25
+            pontos += 0.20
     elif lado_comp == 'away':
         if gols_f < gols_c and (fin_a >= fin_h or xg_a >= xg_h):
-            pontos += 0.45
+            pontos += 0.40
         elif gols_c == gols_f and (fin_a >= fin_h or xg_a >= xg_h):
-            pontos += 0.25
+            pontos += 0.20
 
     if lado_comp and abs(score_comp_home - score_comp_away) < 1.0:
         pontos -= 0.05
 
     # ------------------------------------------------------------------
-    # 10) Pré-live: peso secundário.
+    # 8) Pré-live: apenas desempate secundário.
     # ------------------------------------------------------------------
     if prelive_info:
         ajuste = float(prelive_info.get('ajuste', 0.0) or 0.0)
-        pontos += max(-0.25, min(0.25, ajuste))
+        pontos += max(-0.20, min(0.20, ajuste))
 
     # ------------------------------------------------------------------
-    # 11) Convergência.
+    # 9) Convergência.
     # ------------------------------------------------------------------
     sinais_fortes = sum([
         xg_tot >= (0.70 if mercado == '05_HT' else 1.30),
@@ -2345,80 +2334,94 @@ def calcular_confianca_independente(
         intensidade == 'CRESCENTE',
     ])
 
-    if sinais_fortes >= 6:
+    if sinais_fortes >= 7:
         pontos += 0.30
+    elif sinais_fortes >= 6:
+        pontos += 0.20
     elif sinais_fortes >= 5:
-        pontos += 0.15
+        pontos += 0.10
     elif sinais_fortes <= 2:
-        pontos -= 0.45
+        pontos -= 0.50
     elif sinais_fortes == 3:
-        pontos -= 0.20
+        pontos -= 0.25
 
     # ------------------------------------------------------------------
-    # 12) TETOS DE CONFIANÇA — V10.
-    #
-    # O teto agora considera simultaneamente:
-    #   a) convergência;
-    #   b) tempo restante;
-    #   c) gols necessários.
-    #
-    # Isso impede que 9.5 seja produzido apenas por xG + finalizações +
-    # pressão acumulada.
+    # 10) TETOS DE CONFIANÇA — V11.
     # ------------------------------------------------------------------
     teto_confianca = 9.5
 
     if sinais_fortes <= 3:
-        teto_confianca = 8.4
+        teto_confianca = 8.2
     elif sinais_fortes == 4:
-        teto_confianca = 8.9
+        teto_confianca = 8.7
     elif sinais_fortes == 5:
-        teto_confianca = 9.2
+        teto_confianca = 9.1
 
     if intensidade == 'CAINDO':
-        teto_confianca = min(teto_confianca, 8.7)
+        teto_confianca = min(teto_confianca, 8.5)
 
-    # Limite temporal por mercado.
+    # Teto por relógio.
     if mercado == 'LIMITE_FT':
         if minuto >= 75:
-            teto_confianca = min(teto_confianca, 8.5)
+            teto_confianca = min(teto_confianca, 8.3)
         elif minuto >= 72:
-            teto_confianca = min(teto_confianca, 8.9)
+            teto_confianca = min(teto_confianca, 8.7)
         elif minuto >= 70:
+            teto_confianca = min(teto_confianca, 9.0)
+        elif minuto >= 68:
             teto_confianca = min(teto_confianca, 9.2)
     else:
         if minuto >= 30:
-            teto_confianca = min(teto_confianca, 8.6)
+            teto_confianca = min(teto_confianca, 8.5)
         elif minuto >= 27:
-            teto_confianca = min(teto_confianca, 8.9)
+            teto_confianca = min(teto_confianca, 8.8)
 
-    # Quantidade de gols necessária também limita o teto.
+    # Teto por quantidade de gols ainda necessários.
     if gols_necessarios >= 2:
         if tempo_restante < 20:
-            teto_confianca = min(teto_confianca, 8.0)
+            teto_confianca = min(teto_confianca, 7.8)
         elif tempo_restante < 25:
-            teto_confianca = min(teto_confianca, 8.5)
+            teto_confianca = min(teto_confianca, 8.3)
         else:
-            teto_confianca = min(teto_confianca, 9.0)
-
+            teto_confianca = min(teto_confianca, 8.9)
     elif gols_necessarios == 1:
         if tempo_restante < 12:
-            teto_confianca = min(teto_confianca, 8.3)
+            teto_confianca = min(teto_confianca, 8.1)
         elif tempo_restante < 15:
-            teto_confianca = min(teto_confianca, 8.7)
+            teto_confianca = min(teto_confianca, 8.5)
         elif tempo_restante < 18:
-            teto_confianca = min(teto_confianca, 9.0)
+            teto_confianca = min(teto_confianca, 8.8)
 
-    # Para FT tardio, 9+ exige evidência excepcional.
-    if mercado == 'LIMITE_FT' and minuto >= 70:
-        excepcional = (
-            xg_tot >= 2.50
-            and chutes_gol >= 6
-            and grandes_chances >= 3
-            and recente >= 35
-            and aceleracao >= 0
-            and intensidade != 'CAINDO'
-        )
-        if not excepcional:
+    # ------------------------------------------------------------------
+    # 11) 9.5 só quando há convergência + tempo + qualidade excepcionais.
+    # ------------------------------------------------------------------
+    excepcional_ft = (
+        mercado == 'LIMITE_FT'
+        and gols_necessarios == 1
+        and xg_tot >= 2.50
+        and chutes_gol >= 6
+        and grandes_chances >= 3
+        and recente >= 35
+        and aceleracao >= 0
+        and intensidade != 'CAINDO'
+        and sinais_fortes >= 6
+    )
+
+    if mercado == 'LIMITE_FT' and minuto >= 65 and gols_necessarios == 1:
+        if excepcional_ft:
+            # Mantém 9.5 disponível para os casos realmente extraordinários.
+            pass
+        elif minuto >= 70:
+            teto_confianca = min(teto_confianca, 8.8)
+        else:
+            teto_confianca = min(teto_confianca, 9.1)
+
+    # 0x0 tardio: um único lado dominar não pode, sozinho, produzir 9+.
+    if mercado == 'LIMITE_FT' and minuto >= 65 and total_gols == 0 and xg_tot > 0:
+        share_maior = max(xg_h, xg_a) / xg_tot
+        if share_maior >= 0.90:
+            teto_confianca = min(teto_confianca, 8.6)
+        elif share_maior >= 0.80:
             teto_confianca = min(teto_confianca, 8.9)
 
     # Expulsão do time que está atrás é risco estrutural.
@@ -2426,32 +2429,32 @@ def calcular_confianca_independente(
         if (gols_c < gols_f and vermelhos_casa) or (
             gols_f < gols_c and vermelhos_fora
         ):
-            teto_confianca = min(teto_confianca, 7.8)
+            teto_confianca = min(teto_confianca, 7.7)
 
-    # xG baixo + produção baixa não pode virar confiança alta por pressão isolada.
+    # xG baixo + produção baixa não pode virar confiança alta.
     if xg_tot < 0.70 and chutes_gol < 3 and grandes_chances < 2:
-        teto_confianca = min(teto_confianca, 7.8)
+        teto_confianca = min(teto_confianca, 7.7)
 
-    # Cenário em que o time atrás produz muito pouco.
+    # Time atrás muito pouco envolvido.
     if diferenca == 1:
         if gols_c < gols_f:
-            xg_atras = xg_h
-            fin_atras = fin_h
+            xg_atras, fin_atras = xg_h, fin_h
         else:
-            xg_atras = xg_a
-            fin_atras = fin_a
-
+            xg_atras, fin_atras = xg_a, fin_a
         if (
             xg_tot > 0
-            and (xg_atras / xg_tot) < 0.25
+            and xg_atras / xg_tot < 0.25
             and fin_tot > 0
-            and (fin_atras / fin_tot) < 0.30
+            and fin_atras / fin_tot < 0.30
         ):
-            teto_confianca = min(teto_confianca, 7.8)
+            teto_confianca = min(teto_confianca, 7.7)
 
-    # 9.5 é reservado para convergência realmente excepcional.
+    # 9.5 continua raro: requer pelo menos 6 sinais fortes e não pode estar
+    # em cenário temporal claramente desfavorável.
     if sinais_fortes < 6:
-        teto_confianca = min(teto_confianca, 9.3)
+        teto_confianca = min(teto_confianca, 9.2)
+    if mercado == 'LIMITE_FT' and minuto >= 70 and not excepcional_ft:
+        teto_confianca = min(teto_confianca, 8.8)
 
     return max(0.0, min(teto_confianca, round(pontos, 1)))
 

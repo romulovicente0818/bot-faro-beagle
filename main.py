@@ -3358,6 +3358,39 @@ def checar_jogos_ao_vivo():
             if not minuto_num:
                 continue
 
+            # ==================================================================
+            # PRÉ-FILTRO DE LATÊNCIA
+            # ==================================================================
+            # Só consulta estatísticas detalhadas quando a partida está dentro
+            # da janela de algum mercado. Isso evita gastar dezenas/centenas de
+            # requisições com jogos que jamais poderão gerar alerta neste ciclo.
+            candidato_05_ht = (
+                total_gols == 0
+                and eh_1h
+                and 15 <= minuto_num <= 25
+                and event_id not in notificados_05_ht
+            )
+            candidato_15_ht = (
+                total_gols == 1
+                and eh_1h
+                and 18 <= minuto_num <= 28
+                and event_id not in notificados_15_ht
+            )
+            candidato_limite_ft = (
+                eh_2h
+                and abs(gols_c - gols_f) <= 1
+                and total_gols <= 4
+                and 65 <= minuto_num <= 75
+                and event_id not in notificados_limite_ft
+            )
+
+            if not (
+                candidato_05_ht
+                or candidato_15_ht
+                or candidato_limite_ft
+            ):
+                continue
+
             stats = obter_estatisticas_sofascore(
                 event_id
             )
@@ -3888,4 +3921,7 @@ if __name__ == '__main__':
                 f"Aviso no ciclo principal: {e}"
             )
 
-        time.sleep(120)
+        # Mantém aproximadamente 30s ENTRE O INÍCIO das varreduras.
+        # Assim, o tempo de processamento não soma mais 30s ao intervalo.
+        tempo_processamento = time.monotonic() - inicio_ciclo
+        time.sleep(max(0, 30 - tempo_processamento))

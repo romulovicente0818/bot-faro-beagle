@@ -15,7 +15,7 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = os.getenv('8826311067:AAF4HkxYj79Gq7HxN7XZz-s9LdOO4LB8fr8', '')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
 CHAT_ID = '-1004321907969'
 
 if not TELEGRAM_TOKEN:

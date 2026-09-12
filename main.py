@@ -1,10 +1,12 @@
 import time
+import os
 import cloudscraper
 from datetime import datetime, timedelta
 import zoneinfo
 
-# curl_cffi é usado como segunda camada quando o SofaScore devolve 403.
-# O código continua funcionando com cloudscraper caso a biblioteca não esteja instalada.
+# curl_cffi é usado como primeira camada quando disponível, pois o Railway
+# pode receber 403 do CDN do SofaScore quando a requisição parece automação.
+# O código mantém cloudscraper como fallback.
 try:
     from curl_cffi import requests as cffi_requests
 except ImportError:
@@ -13,8 +15,11 @@ except ImportError:
 # ==============================================================================
 # CONFIGURAÇÕES E CREDENCIAIS
 # ==============================================================================
-TELEGRAM_TOKEN = '8826311067:AAF4HkxYj79Gq7HxN7XZz-s9LdOO4LB8fr8'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
 CHAT_ID = '-1004321907969'
+
+if not TELEGRAM_TOKEN:
+    print('ATENÇÃO: variável TELEGRAM_TOKEN não configurada no Railway.')
 
 TERMOS_IGNORADOS = [
     # Categorias de Base
@@ -44,14 +49,35 @@ scraper = cloudscraper.create_scraper(
     }
 )
 
-# Segunda sessão opcional, com fingerprint TLS de Chrome.
-# É particularmente útil quando o CDN do SofaScore responde 403 ao cloudscraper.
+# Sessão com fingerprint TLS de Chrome.
+# Preferimos esta sessão no acesso ao SofaScore quando curl_cffi está disponível.
 cffi_scraper = None
 if cffi_requests is not None:
     try:
         cffi_scraper = cffi_requests.Session(impersonate='chrome')
     except Exception as e:
         print(f'Não foi possível iniciar curl_cffi: {e}')
+
+# Evita repetir a preparação do navegador a cada requisição.
+sofascore_sessoes_preparadas = set()
+
+def preparar_sessao_sofascore(sessao, nome):
+    """Inicializa cookies do site antes de consultar a API.
+
+    Alguns bloqueios do CDN são mais agressivos quando a primeira requisição
+    da sessão vai diretamente para /api/v1.
+    """
+    if sessao is None or nome in sofascore_sessoes_preparadas:
+        return
+    try:
+        sessao.get(
+            'https://www.sofascore.com/',
+            headers=SOFASCORE_HEADERS,
+            timeout=10
+        )
+        sofascore_sessoes_preparadas.add(nome)
+    except Exception as e:
+        print(f'Pré-aquecimento SofaScore ({nome}) falhou: {e}')
 
 # Camada de acesso ao SofaScore com headers de navegador e múltiplas rotas.
 SOFASCORE_HEADERS = {
@@ -82,7 +108,32 @@ def sofascore_get(path, timeout=10):
     ultimo_status = None
     urls_403 = []
 
-    # 1) Tentativa normal com cloudscraper.
+    # 1) Preferência: curl_cffi com fingerprint de Chrome.
+    # No Railway, essa camada tem prioridade porque o problema observado é
+    # especificamente HTTP 403 no CDN do SofaScore.
+    if cffi_scraper is not None:
+        preparar_sessao_sofascore(cffi_scraper, 'cffi')
+        for base in SOFASCORE_BASES:
+            url = f'{base}/{path}'
+            try:
+                res = cffi_scraper.get(
+                    url,
+                    headers=SOFASCORE_HEADERS,
+                    timeout=timeout
+                )
+                ultimo_status = res.status_code
+                if res.status_code == 200:
+                    return res
+                if res.status_code == 403:
+                    urls_403.append(url)
+                    continue
+                if res.status_code != 404:
+                    print(f'SofaScore {url}: status {res.status_code}')
+            except Exception as e:
+                print(f'Erro SofaScore curl_cffi {url}: {e}')
+
+    # 2) Fallback: cloudscraper, também com pré-aquecimento da sessão.
+    preparar_sessao_sofascore(scraper, 'cloudscraper')
     for base in SOFASCORE_BASES:
         url = f'{base}/{path}'
         try:
@@ -92,22 +143,18 @@ def sofascore_get(path, timeout=10):
                 timeout=timeout
             )
             ultimo_status = res.status_code
-
             if res.status_code == 200:
                 return res
-
             if res.status_code == 403:
                 urls_403.append(url)
                 continue
-
-            # 404 em endpoints individuais é esperado em alguns eventos/dados.
             if res.status_code != 404:
                 print(f'SofaScore {url}: status {res.status_code}')
-
         except Exception as e:
             print(f'Erro SofaScore {url}: {e}')
 
-    # 2) Se houve 403, tenta primeiro o espelho.
+    # 3) Último recurso oficial: o endpoint espelhado já usado no código.
+    # Só é consultado depois das rotas oficiais principais.
     if urls_403:
         for base in SOFASCORE_403_FALLBACKS:
             url = f'{base}/{path}'
@@ -119,28 +166,13 @@ def sofascore_get(path, timeout=10):
                 )
                 ultimo_status = res.status_code
                 if res.status_code == 200:
-                    print(f'SofaScore: rota recuperada pelo espelho: {url}')
+                    print(f'SofaScore: rota de contingência recuperada: {url}')
                     return res
+                if res.status_code != 404:
+                    print(f'SofaScore contingência {url}: status {res.status_code}')
             except Exception as e:
-                print(f'Erro SofaScore espelho {url}: {e}')
+                print(f'Erro SofaScore contingência {url}: {e}')
 
-    # 3) Se o 403 persistir, tenta fingerprint TLS de Chrome.
-    if urls_403 and cffi_scraper is not None:
-        for url in urls_403:
-            try:
-                res = cffi_scraper.get(
-                    url,
-                    headers=SOFASCORE_HEADERS,
-                    timeout=timeout
-                )
-                ultimo_status = res.status_code
-                if res.status_code == 200:
-                    print(f'SofaScore: rota recuperada via curl_cffi: {url}')
-                    return res
-            except Exception as e:
-                print(f'Erro SofaScore curl_cffi {url}: {e}')
-
-    # Só deixa o 403 explícito no log quando todas as alternativas falharam.
     if ultimo_status is not None and ultimo_status not in (404, 403):
         print(
             f'SofaScore: nenhuma rota respondeu 200 para {path} '
@@ -148,8 +180,8 @@ def sofascore_get(path, timeout=10):
         )
     elif ultimo_status == 403:
         print(
-            f'SofaScore: 403 em todas as rotas para {path}. '
-            f'Verifique bloqueio do IP/rede do Railway.'
+            f'SofaScore: 403 persistente para {path}. '
+            f'As rotas disponíveis foram recusadas pelo CDN.'
         )
 
     return None

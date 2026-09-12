@@ -3870,11 +3870,13 @@ if __name__ == '__main__':
     print(
         f"[{horario_inicio}] "
         f"Faro de Beagle rodando "
-        f"08h-02h | ciclo de 120s | HT/FT "
+        f"08h-02h | ciclo de 30s | HT/FT "
         f"(sem prorrogação)..."
     )
 
     while True:
+
+        inicio_ciclo = time.monotonic()
 
         try:
 

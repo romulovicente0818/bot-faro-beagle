@@ -18,19 +18,6 @@ except ImportError:
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
 CHAT_ID = '-1004321907969'
 
-# Saída alternativa para o SofaScore.
-# Se SOFASCORE_PROXY_URL estiver configurada no Railway, as consultas ao
-# SofaScore passam primeiro por esse proxy. Sem a variável, o comportamento
-# direto permanece igual ao da versão anterior.
-SOFASCORE_PROXY_URL = os.getenv('SOFASCORE_PROXY_URL', '').strip()
-SOFASCORE_PROXIES = None
-if SOFASCORE_PROXY_URL:
-    SOFASCORE_PROXIES = {
-        'http': SOFASCORE_PROXY_URL,
-        'https': SOFASCORE_PROXY_URL,
-    }
-    print('SofaScore: proxy de saída configurado via SOFASCORE_PROXY_URL.')
-
 if not TELEGRAM_TOKEN:
     print('ATENÇÃO: variável TELEGRAM_TOKEN não configurada no Railway.')
 
@@ -132,8 +119,7 @@ def sofascore_get(path, timeout=10):
                 res = cffi_scraper.get(
                     url,
                     headers=SOFASCORE_HEADERS,
-                    timeout=timeout,
-                    proxies=SOFASCORE_PROXIES
+                    timeout=timeout
                 )
                 ultimo_status = res.status_code
                 if res.status_code == 200:
@@ -176,8 +162,7 @@ def sofascore_get(path, timeout=10):
                 res = scraper.get(
                     url,
                     headers=SOFASCORE_HEADERS,
-                    timeout=timeout,
-                    proxies=SOFASCORE_PROXIES
+                    timeout=timeout
                 )
                 ultimo_status = res.status_code
                 if res.status_code == 200:
@@ -194,17 +179,10 @@ def sofascore_get(path, timeout=10):
             f'(último status: {ultimo_status})'
         )
     elif ultimo_status == 403:
-        if SOFASCORE_PROXY_URL:
-            print(
-                f'SofaScore: 403 persistente para {path}, inclusive usando '
-                f'o proxy configurado em SOFASCORE_PROXY_URL.'
-            )
-        else:
-            print(
-                f'SofaScore: 403 persistente para {path}. '
-                f'As rotas diretas foram recusadas pelo CDN. '
-                f'Para usar uma saída alternativa, configure SOFASCORE_PROXY_URL no Railway.'
-            )
+        print(
+            f'SofaScore: 403 persistente para {path}. '
+            f'As rotas disponíveis foram recusadas pelo CDN.'
+        )
 
     return None
 
@@ -3164,6 +3142,40 @@ def obter_evento_sofascore(event_id):
     return None
 
 
+def sincronizar_placar_recente(event_id, item):
+    """Confirma o placar atual diretamente no evento antes de emitir um alerta.
+
+    A lista /events/live pode ficar alguns segundos atrasada em relação ao
+    endpoint individual do evento. Isso é especialmente crítico no +0,5 HT:
+    um gol pode sair no minuto 17 e a lista ainda chegar como 0x0 no minuto 18.
+    Retorna True quando conseguiu consultar o evento e atualiza o item local.
+    """
+    evento = obter_evento_sofascore(event_id)
+    if not evento:
+        return False
+
+    home_score = evento.get('homeScore', {}) or {}
+    away_score = evento.get('awayScore', {}) or {}
+
+    home_current = home_score.get('current')
+    away_current = away_score.get('current')
+
+    if home_current is None or away_current is None:
+        return False
+
+    # Atualiza o mesmo objeto usado pelo restante da análise.
+    item['homeScore'] = dict(home_score)
+    item['awayScore'] = dict(away_score)
+
+    # Também sincroniza status/time quando disponíveis, sem depender deles.
+    if evento.get('status'):
+        item['status'] = evento.get('status')
+    if evento.get('time'):
+        item['time'] = evento.get('time')
+
+    return True
+
+
 def checar_alertas_pendentes_fora_do_live(jogos_dict):
     """Inclui no dicionário os alertas pendentes que já saíram da lista live."""
     for info in list(alertas_pendentes.values()):
@@ -3386,6 +3398,54 @@ def checar_jogos_ao_vivo():
             # Só consulta estatísticas detalhadas quando a partida está dentro
             # da janela de algum mercado. Isso evita gastar dezenas/centenas de
             # requisições com jogos que jamais poderão gerar alerta neste ciclo.
+            candidato_05_ht = (
+                total_gols == 0
+                and eh_1h
+                and 15 <= minuto_num <= 25
+                and event_id not in notificados_05_ht
+            )
+            candidato_15_ht = (
+                total_gols == 1
+                and eh_1h
+                and 18 <= minuto_num <= 28
+                and event_id not in notificados_15_ht
+            )
+            candidato_limite_ft = (
+                eh_2h
+                and abs(gols_c - gols_f) <= 1
+                and total_gols <= 4
+                and 65 <= minuto_num <= 75
+                and event_id not in notificados_limite_ft
+            )
+
+            if not (
+                candidato_05_ht
+                or candidato_15_ht
+                or candidato_limite_ft
+            ):
+                continue
+
+            # ==================================================================
+            # CONFIRMAÇÃO DO PLACAR ANTES DAS ESTATÍSTICAS/ALERTA
+            # ==================================================================
+            # A lista de jogos ao vivo pode chegar atrasada após um gol.
+            # Confirma o placar somente para candidatos, evitando centenas de
+            # requisições extras por ciclo. Se a confirmação falhar, não emite
+            # um +0,5 HT baseado em um possível 0x0 desatualizado.
+            placar_confirmado = sincronizar_placar_recente(event_id, item)
+            if not placar_confirmado:
+                if candidato_05_ht:
+                    print(
+                        f"Placar não confirmado para {event_id}; "
+                        f"+0,5 HT ignorado neste ciclo para evitar alerta atrasado."
+                    )
+                    continue
+
+            # Recalcula o placar e as candidaturas depois da confirmação.
+            gols_c = item.get('homeScore', {}).get('current', 0)
+            gols_f = item.get('awayScore', {}).get('current', 0)
+            total_gols = gols_c + gols_f
+
             candidato_05_ht = (
                 total_gols == 0
                 and eh_1h

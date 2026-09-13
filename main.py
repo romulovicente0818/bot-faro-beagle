@@ -18,6 +18,19 @@ except ImportError:
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
 CHAT_ID = '-1004321907969'
 
+# Saída alternativa para o SofaScore.
+# Se SOFASCORE_PROXY_URL estiver configurada no Railway, as consultas ao
+# SofaScore passam primeiro por esse proxy. Sem a variável, o comportamento
+# direto permanece igual ao da versão anterior.
+SOFASCORE_PROXY_URL = os.getenv('SOFASCORE_PROXY_URL', '').strip()
+SOFASCORE_PROXIES = None
+if SOFASCORE_PROXY_URL:
+    SOFASCORE_PROXIES = {
+        'http': SOFASCORE_PROXY_URL,
+        'https': SOFASCORE_PROXY_URL,
+    }
+    print('SofaScore: proxy de saída configurado via SOFASCORE_PROXY_URL.')
+
 if not TELEGRAM_TOKEN:
     print('ATENÇÃO: variável TELEGRAM_TOKEN não configurada no Railway.')
 
@@ -119,7 +132,8 @@ def sofascore_get(path, timeout=10):
                 res = cffi_scraper.get(
                     url,
                     headers=SOFASCORE_HEADERS,
-                    timeout=timeout
+                    timeout=timeout,
+                    proxies=SOFASCORE_PROXIES
                 )
                 ultimo_status = res.status_code
                 if res.status_code == 200:
@@ -162,7 +176,8 @@ def sofascore_get(path, timeout=10):
                 res = scraper.get(
                     url,
                     headers=SOFASCORE_HEADERS,
-                    timeout=timeout
+                    timeout=timeout,
+                    proxies=SOFASCORE_PROXIES
                 )
                 ultimo_status = res.status_code
                 if res.status_code == 200:
@@ -179,10 +194,17 @@ def sofascore_get(path, timeout=10):
             f'(último status: {ultimo_status})'
         )
     elif ultimo_status == 403:
-        print(
-            f'SofaScore: 403 persistente para {path}. '
-            f'As rotas disponíveis foram recusadas pelo CDN.'
-        )
+        if SOFASCORE_PROXY_URL:
+            print(
+                f'SofaScore: 403 persistente para {path}, inclusive usando '
+                f'o proxy configurado em SOFASCORE_PROXY_URL.'
+            )
+        else:
+            print(
+                f'SofaScore: 403 persistente para {path}. '
+                f'As rotas diretas foram recusadas pelo CDN. '
+                f'Para usar uma saída alternativa, configure SOFASCORE_PROXY_URL no Railway.'
+            )
 
     return None
 

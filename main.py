@@ -2012,7 +2012,7 @@ def calcular_confianca_independente(
 ):
     """Calcula a CONFIANÇA de forma independente do GOAL SCORE.
 
-    V12.1 — calibração cirúrgica baseada nas amostras recentes.
+    V12.2 — calibração por mercado baseada nas amostras acumuladas.
 
     Objetivos da V12.1:
       - reduzir confiança artificialmente alta em sinais com pouca convergência;
@@ -2252,7 +2252,7 @@ def calcular_confianca_independente(
     # ------------------------------------------------------------------
     # 4) Calibração por linha/mercado.
     # As amostras recentes mostraram maior fragilidade em +1,5 HT e em
-    # +2,5 FT; o ajuste é deliberadamente pequeno para não reescrever o V12.
+    # +2,5 FT; o ajuste é deliberadamente pequeno para não reescrever a V12.2.
     # ------------------------------------------------------------------
     if mercado == '05_HT':
         pontos += 0.05
@@ -2458,9 +2458,9 @@ def calcular_confianca_independente(
     elif sinais_fortes == 5:
         teto_confianca = 8.65
     elif sinais_fortes == 6:
-        teto_confianca = 8.95
+        teto_confianca = 8.80
     else:
-        teto_confianca = 9.25
+        teto_confianca = 9.15
 
     if intensidade == 'CAINDO':
         teto_confianca = min(teto_confianca, 8.2)
@@ -2507,11 +2507,23 @@ def calcular_confianca_independente(
         elif tempo_restante < 18:
             teto_confianca = min(teto_confianca, 7.8)
         else:
-            teto_confianca = min(teto_confianca, 8.15)
+            teto_confianca = min(teto_confianca, 7.95)
 
-    # +2,5 FT: teto moderado até termos amostra maior.
-    if mercado == 'LIMITE_FT' and total_gols == 2:
-        teto_confianca = min(teto_confianca, 8.2 if tempo_restante >= 25 else 7.9)
+    # V12.2 — tetos por linha FT.
+    # As amostras acumuladas mostraram que confiança alta não deve ser
+    # transferida automaticamente entre linhas. Mantemos o cálculo dos
+    # indicadores, mas reduzimos o teto das linhas com conversão mais fraca.
+    if mercado == 'LIMITE_FT':
+        if total_gols == 0:      # +0,5 FT
+            teto_confianca = min(teto_confianca, 8.8)
+        elif total_gols == 1:    # +1,5 FT
+            teto_confianca = min(teto_confianca, 8.6)
+        elif total_gols == 2:    # +2,5 FT
+            teto_confianca = min(teto_confianca, 8.1)
+        elif total_gols == 3:    # +3,5 FT
+            teto_confianca = min(teto_confianca, 8.4)
+        else:                    # +4,5 FT ou superior
+            teto_confianca = min(teto_confianca, 7.9)
 
     # 9.5 exclusivamente excepcional.
     excepcional_ft = (
@@ -2534,9 +2546,9 @@ def calcular_confianca_independente(
         if excepcional_ft:
             teto_confianca = min(teto_confianca, 9.5)
         elif minuto >= 70:
-            teto_confianca = min(teto_confianca, 8.45)
+            teto_confianca = min(teto_confianca, 8.35)
         else:
-            teto_confianca = min(teto_confianca, 8.9)
+            teto_confianca = min(teto_confianca, 8.65)
 
     # 0x0 tardio.
     if mercado == 'LIMITE_FT' and minuto >= 65 and total_gols == 0 and xg_tot > 0:
@@ -3171,6 +3183,37 @@ def obter_evento_sofascore(event_id):
     return None
 
 
+
+def sincronizar_placar_recente(event_id, item):
+    """Confirma o placar no endpoint individual antes de emitir alerta.
+
+    A lista de jogos ao vivo pode chegar alguns segundos atrasada em relação
+    ao endpoint do evento. Esta confirmação evita emitir +0,5 HT usando um
+    0x0 já desatualizado depois de um gol.
+    """
+    try:
+        evento = obter_evento_sofascore(event_id)
+        if not evento:
+            return False
+
+        home_score = evento.get('homeScore', {}) or {}
+        away_score = evento.get('awayScore', {}) or {}
+        home_current = home_score.get('current')
+        away_current = away_score.get('current')
+
+        if home_current is None or away_current is None:
+            return False
+
+        item['homeScore'] = dict(home_score)
+        item['awayScore'] = dict(away_score)
+        if evento.get('status'):
+            item['status'] = evento.get('status')
+        if evento.get('time'):
+            item['time'] = evento.get('time')
+        return True
+    except Exception:
+        return False
+
 def checar_alertas_pendentes_fora_do_live(jogos_dict):
     """Inclui no dicionário os alertas pendentes que já saíram da lista live."""
     for info in list(alertas_pendentes.values()):
@@ -3420,88 +3463,47 @@ def checar_jogos_ao_vivo():
             ):
                 continue
 
-            # ------------------------------------------------------------------
-            # CONFIRMAÇÃO RÁPIDA DO PLACAR
-            # O feed /events/live pode ficar alguns segundos atrasado em relação
-            # ao endpoint individual do evento. Antes de gastar as consultas
-            # detalhadas, sincronizamos somente os jogos candidatos.
-            # ------------------------------------------------------------------
-            evento_atualizado = obter_evento_sofascore(event_id)
-            if evento_atualizado:
-                home_score_atualizado = evento_atualizado.get('homeScore', {}) or {}
-                away_score_atualizado = evento_atualizado.get('awayScore', {}) or {}
-                home_current = home_score_atualizado.get('current')
-                away_current = away_score_atualizado.get('current')
-
-                if home_current is not None and away_current is not None:
-                    item['homeScore'] = dict(home_score_atualizado)
-                    item['awayScore'] = dict(away_score_atualizado)
-                    if evento_atualizado.get('status'):
-                        item['status'] = evento_atualizado.get('status')
-                    if evento_atualizado.get('time'):
-                        item['time'] = evento_atualizado.get('time')
-
-                    # O endpoint individual também pode corrigir a fase/minuto.
-                    # Recalcula esses campos para não avaliar um jogo como 1º tempo
-                    # quando ele acabou de virar o intervalo.
-                    status_desc = str(
-                        item.get('status', {}).get('description', '')
-                    ).lower()
-                    time_status = str(
-                        item.get('status', {}).get('type', '')
-                    ).lower()
-                    eh_1h = (
-                        time_status == 'inprogress'
-                        and '1st' in status_desc
-                    )
-                    eh_2h = (
-                        time_status == 'inprogress'
-                        and '2nd' in status_desc
-                    )
-                    minutagem, minuto_num = extrair_minutagem_e_numero(
-                        item, eh_1h, eh_2h
-                    )
-                    if not minuto_num:
-                        continue
-
-                    gols_c = int(home_current or 0)
-                    gols_f = int(away_current or 0)
-                    total_gols = gols_c + gols_f
-
-                    # Recalcula os candidatos com o placar/fase confirmados.
-                    candidato_05_ht = (
-                        total_gols == 0
-                        and eh_1h
-                        and 15 <= minuto_num <= 25
-                        and event_id not in notificados_05_ht
-                    )
-                    candidato_15_ht = (
-                        total_gols == 1
-                        and eh_1h
-                        and 18 <= minuto_num <= 28
-                        and event_id not in notificados_15_ht
-                    )
-                    candidato_limite_ft = (
-                        eh_2h
-                        and abs(gols_c - gols_f) <= 1
-                        and total_gols <= 4
-                        and 65 <= minuto_num <= 75
-                        and event_id not in notificados_limite_ft
-                    )
-
-                    if not (
-                        candidato_05_ht
-                        or candidato_15_ht
-                        or candidato_limite_ft
-                    ):
-                        continue
-                elif candidato_05_ht:
-                    # Sem confirmação individual, não arrisca um +0,5 HT
-                    # baseado em um possível 0x0 atrasado no feed ao vivo.
+            # Confirma o placar no endpoint individual para não trabalhar com
+            # um 0x0/placar antigo da lista /live.
+            placar_confirmado = sincronizar_placar_recente(event_id, item)
+            if not placar_confirmado:
+                if candidato_05_ht:
                     print(
-                        f'Placar não confirmado para {event_id}; '
-                        'pulando candidato +0,5 HT neste ciclo.'
+                        f'Placar não confirmado para {event_id}; ' 
+                        'alerta +0,5 HT ignorado neste ciclo.'
                     )
+                    continue
+            else:
+                gols_c = score_int(item.get('homeScore', {}).get('current'))
+                gols_f = score_int(item.get('awayScore', {}).get('current'))
+                total_gols = gols_c + gols_f
+
+                # Recalcula os candidatos com o placar confirmado.
+                candidato_05_ht = (
+                    total_gols == 0
+                    and eh_1h
+                    and 15 <= minuto_num <= 25
+                    and event_id not in notificados_05_ht
+                )
+                candidato_15_ht = (
+                    total_gols == 1
+                    and eh_1h
+                    and 18 <= minuto_num <= 28
+                    and event_id not in notificados_15_ht
+                )
+                candidato_limite_ft = (
+                    eh_2h
+                    and abs(gols_c - gols_f) <= 1
+                    and total_gols <= 4
+                    and 65 <= minuto_num <= 75
+                    and event_id not in notificados_limite_ft
+                )
+
+                if not (
+                    candidato_05_ht
+                    or candidato_15_ht
+                    or candidato_limite_ft
+                ):
                     continue
 
             stats = obter_estatisticas_sofascore(

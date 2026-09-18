@@ -2955,6 +2955,14 @@ def atualizar_relatorio_pos_02h(info, resultado):
     info['relatorio_mensagem'] = nova
 
 
+def score_int(valor):
+    """Converte um valor de placar para inteiro com segurança."""
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return None
+
+
 def validar_alertas_enviados(jogos_dict):
     """
     Valida alertas somente no encerramento do período correspondente.
@@ -2973,12 +2981,6 @@ def validar_alertas_enviados(jogos_dict):
     Red, evitando uma liquidação em uma janela transitória de VAR.
     """
     chaves_para_remover = []
-
-    def score_int(valor):
-        try:
-            return int(valor)
-        except (TypeError, ValueError):
-            return None
 
     for chave_alerta, info in list(alertas_pendentes.items()):
         event_id = info['event_id']

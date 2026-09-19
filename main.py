@@ -21,6 +21,11 @@ CHAT_ID = '-1004321907969'
 if not TELEGRAM_TOKEN:
     print('ATENÇÃO: variável TELEGRAM_TOKEN não configurada no Railway.')
 
+if SOFASCORE_PROXY_URL:
+    print('SofaScore: proxy configurado para as consultas.')
+else:
+    print('SofaScore: sem proxy configurado; usando acesso direto/fallbacks.')
+
 TERMOS_IGNORADOS = [
     # Categorias de Base
     'u15', 'u16', 'u17', 'u18', 'u19', 'u20', 'u21', 'u22', 'u23',
@@ -103,6 +108,15 @@ SOFASCORE_403_FALLBACKS = [
     'https://api.sofascore.app/api/v1',
 ]
 
+# Proxy opcional para casos em que o IP de saída do Railway é bloqueado pelo CDN.
+# Configure no Railway: SOFASCORE_PROXY_URL=http://usuario:senha@host:porta
+# ou um proxy SOCKS5 compatível. Sem esta variável, o comportamento permanece igual.
+SOFASCORE_PROXY_URL = os.getenv('SOFASCORE_PROXY_URL', '').strip()
+SOFASCORE_PROXIES = (
+    {'http': SOFASCORE_PROXY_URL, 'https': SOFASCORE_PROXY_URL}
+    if SOFASCORE_PROXY_URL else None
+)
+
 def sofascore_get(path, timeout=10):
     path = path.lstrip('/')
     ultimo_status = None
@@ -119,7 +133,8 @@ def sofascore_get(path, timeout=10):
                 res = cffi_scraper.get(
                     url,
                     headers=SOFASCORE_HEADERS,
-                    timeout=timeout
+                    timeout=timeout,
+                    proxies=SOFASCORE_PROXIES
                 )
                 ultimo_status = res.status_code
                 if res.status_code == 200:
@@ -140,7 +155,8 @@ def sofascore_get(path, timeout=10):
             res = scraper.get(
                 url,
                 headers=SOFASCORE_HEADERS,
-                timeout=timeout
+                timeout=timeout,
+                proxies=SOFASCORE_PROXIES
             )
             ultimo_status = res.status_code
             if res.status_code == 200:
@@ -162,7 +178,8 @@ def sofascore_get(path, timeout=10):
                 res = scraper.get(
                     url,
                     headers=SOFASCORE_HEADERS,
-                    timeout=timeout
+                    timeout=timeout,
+                    proxies=SOFASCORE_PROXIES
                 )
                 ultimo_status = res.status_code
                 if res.status_code == 200:

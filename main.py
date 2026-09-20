@@ -3970,7 +3970,7 @@ if __name__ == '__main__':
     print(
         f"[{horario_inicio}] "
         f"Faro de Beagle rodando "
-        f"08h-02h | ciclo de 30s | HT/FT "
+        f"08h-02h | ciclo de 120s | HT/FT "
         f"(sem prorrogação)..."
     )
 
@@ -4023,7 +4023,7 @@ if __name__ == '__main__':
                 f"Aviso no ciclo principal: {e}"
             )
 
-        # Mantém aproximadamente 30s ENTRE O INÍCIO das varreduras.
+        # Mantém aproximadamente 120s ENTRE O INÍCIO das varreduras.
         # Assim, o tempo de processamento não soma mais 30s ao intervalo.
         tempo_processamento = time.monotonic() - inicio_ciclo
-        time.sleep(max(0, 30 - tempo_processamento))
+        time.sleep(max(0, 120 - tempo_processamento))
